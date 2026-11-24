@@ -1,0 +1,227 @@
+import express from 'express';
+import path from 'path';
+import { createServer as createViteServer } from 'vite';
+
+const PORT = Number(process.env.PORT) || 3000;
+
+const ALLOWED_MAPS_HOSTS = [
+  'maps.app.goo.gl',
+  'goo.gl',
+  'app.goo.gl',
+  'g.page',
+  'maps.google.com',
+  'www.google.com',
+  'google.com',
+];
+
+function isAllowedGoogleMapsUrl(rawUrl: string): URL | null {
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol !== 'https:' && parsed.protocol !== 'http:') return null;
+    const host = parsed.hostname.toLowerCase();
+    const allowed =
+      ALLOWED_MAPS_HOSTS.includes(host) ||
+      /^(www\.|maps\.)?google\.[a-z.]{2,6}$/i.test(host);
+    return allowed ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function decodeHtmlEntities(str: string): string {
+  return str
+    .replace(/&amp;/g, '&')
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>');
+}
+
+function extractMetaTag(html: string, property: string): string {
+  const regex = new RegExp(
+    `<meta[^>]+(?:property|name)=["']${property}["'][^>]+content=["']([^"']+)["']`,
+    'i'
+  );
+  const match = html.match(regex);
+  if (match?.[1]) return decodeHtmlEntities(match[1].trim());
+
+  const reverseRegex = new RegExp(
+    `<meta[^>]+content=["']([^"']+)["'][^>]+(?:property|name)=["']${property}["']`,
+    'i'
+  );
+  const reverseMatch = html.match(reverseRegex);
+  return reverseMatch?.[1] ? decodeHtmlEntities(reverseMatch[1].trim()) : '';
+}
+
+function parseDetailsFromUrl(urlStr: string): {
+  name: string;
+  lat?: number;
+  lng?: number;
+} {
+  try {
+    const parsed = new URL(urlStr);
+    let name = '';
+
+    const placeMatch = parsed.pathname.match(/\/maps\/place\/([^/]+)/i);
+    if (placeMatch?.[1]) {
+      name = decodeURIComponent(placeMatch[1].replace(/\+/g, ' ')).trim();
+    }
+
+    const qParam = parsed.searchParams.get('q') || parsed.searchParams.get('query') || '';
+    const coordMatch =
+      urlStr.match(/@(-?\d+\.\d+),(-?\d+\.\d+)/) ||
+      urlStr.match(/!3d(-?\d+\.\d+)!4d(-?\d+\.\d+)/) ||
+      qParam.match(/^(-?\d+\.\d+),\s*(-?\d+\.\d+)$/);
+
+    let lat: number | undefined;
+    let lng: number | undefined;
+    if (coordMatch) {
+      const pLat = Number(coordMatch[1]);
+      const pLng = Number(coordMatch[2]);
+      if (Number.isFinite(pLat) && Number.isFinite(pLng)) {
+        lat = pLat;
+        lng = pLng;
+      }
+    } else if (qParam && !name) {
+      name = qParam.trim();
+    }
+
+    return { name, lat, lng };
+  } catch {
+    return { name: '' };
+  }
+}
+
+async function startServer() {
+  const app = express();
+
+  /**
+   * Resolves shortened Google Maps share links (e.g. https://maps.app.goo.gl/...)
+   * safely by following redirects only across allowlisted Google domains.
+   */
+  app.get('/api/resolve-maps-link', async (req, res) => {
+    const rawUrl = typeof req.query.url === 'string' ? req.query.url.trim() : '';
+    const initial = isAllowedGoogleMapsUrl(rawUrl);
+
+    if (!initial) {
+      res.status(400).json({ error: 'Geçerli bir Google Haritalar bağlantısı giriniz.' });
+      return;
+    }
+
+    let currentUrl = initial.toString();
+    let finalHtml = '';
+
+    try {
+      for (let hop = 0; hop < 6; hop += 1) {
+        const response = await fetch(currentUrl, {
+          method: 'GET',
+          redirect: 'manual',
+          headers: {
+            'User-Agent': 'Mozilla/5.0 (compatible; MekanNotu/1.0)',
+            Accept: 'text/html,application/xhtml+xml',
+            'Accept-Language': 'tr-TR,tr;q=0.9,en;q=0.8',
+          },
+          signal: AbortSignal.timeout(6000),
+        });
+
+        const location = response.headers.get('location');
+        if (response.status >= 300 && response.status < 400 && location) {
+          const nextAbsolute = new URL(location, currentUrl).toString();
+          const allowedNext = isAllowedGoogleMapsUrl(nextAbsolute);
+          if (!allowedNext) {
+            break;
+          }
+          currentUrl = allowedNext.toString();
+          continue;
+        }
+
+        if (response.ok) {
+          const text = await response.text();
+          finalHtml = text.slice(0, 120000);
+        }
+        break;
+      }
+
+      const urlInfo = parseDetailsFromUrl(currentUrl);
+      let name = urlInfo.name;
+      let address = '';
+
+      if (finalHtml) {
+        const ogTitle = extractMetaTag(finalHtml, 'og:title');
+        const ogDesc = extractMetaTag(finalHtml, 'og:description');
+        const cleanOgTitle = ogTitle
+          .replace(/\s*[-·]\s*Google\s*(Maps|Haritalar)\s*$/i, '')
+          .trim();
+
+        if (
+          cleanOgTitle &&
+          !/^Google\s*(Maps|Haritalar)$/i.test(cleanOgTitle) &&
+          (!name || name.length < 2)
+        ) {
+          name = cleanOgTitle;
+        }
+
+        if (ogDesc && !/Find local businesses/i.test(ogDesc) && !/Yerel işletmeleri/i.test(ogDesc)) {
+          address = ogDesc.replace(/^★+\s*[\d.,]+\s*·\s*/u, '').trim();
+        }
+      }
+
+      res.json({
+        resolvedUrl: currentUrl,
+        name,
+        address,
+        lat: urlInfo.lat,
+        lng: urlInfo.lng,
+      });
+    } catch {
+      const urlInfo = parseDetailsFromUrl(currentUrl);
+      res.json({
+        resolvedUrl: currentUrl,
+        name: urlInfo.name,
+        address: '',
+        lat: urlInfo.lat,
+        lng: urlInfo.lng,
+      });
+    }
+  });
+
+  if (process.env.NODE_ENV !== 'production') {
+    const vite = await createViteServer({
+      server: { middlewareMode: true },
+      appType: 'spa',
+    });
+
+    if (process.env.DISABLE_HMR === 'true') {
+      app.get('/@vite/client', async (_req, res, next) => {
+        try {
+          const result = await vite.transformRequest('/@vite/client');
+          if (!result?.code) {
+            next();
+            return;
+          }
+          const patched = result.code.replace(
+            'await wsTransport.connect(handlers);',
+            'return;'
+          );
+          res.type('application/javascript').send(patched);
+        } catch {
+          next();
+        }
+      });
+    }
+
+    app.use(vite.middlewares);
+  } else {
+    const distDir = path.resolve(import.meta.dirname, 'dist');
+    app.use(express.static(distDir));
+    app.get('*', (_req, res) => {
+      res.sendFile(path.join(distDir, 'index.html'));
+    });
+  }
+
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server listening on http://0.0.0.0:${PORT}`);
+  });
+}
+
+void startServer();

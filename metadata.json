@@ -1,0 +1,6 @@
+{
+  "name": "MekanNotu",
+  "description": "Gidilen kafe, restoran ve mekanları konumlarıyla ekleyip puanlayabileceğiniz, fotoğraf ve yorum paylaşabileceğiniz mobil PWA rehber.",
+  "requestFramePermissions": ["geolocation"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

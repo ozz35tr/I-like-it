@@ -1,0 +1,195 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedOwner(userId) {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        request.auth.uid == userId;
+    }
+
+    function isValidPlace(data) {
+      return data.keys().hasAll([
+          'ownerId',
+          'name',
+          'category',
+          'mapsUrl',
+          'coverImage',
+          'latestComment',
+          'avgRating',
+          'reviewCount',
+          'ratingSum',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId',
+          'name',
+          'category',
+          'mapsUrl',
+          'coverImage',
+          'latestComment',
+          'avgRating',
+          'reviewCount',
+          'ratingSum',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ownerId is string &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.name is string &&
+        data.name.size() >= 2 &&
+        data.name.size() <= 100 &&
+        data.category in ['restaurant', 'cafe', 'bakery', 'bistro'] &&
+        data.mapsUrl is string &&
+        data.mapsUrl.size() <= 600 &&
+        data.coverImage is string &&
+        data.coverImage.size() <= 160000 &&
+        data.latestComment is string &&
+        data.latestComment.size() <= 1500 &&
+        data.avgRating is number &&
+        data.avgRating >= 0 &&
+        data.avgRating <= 5 &&
+        data.reviewCount is number &&
+        data.reviewCount >= 0 &&
+        data.reviewCount <= 10000 &&
+        data.ratingSum is number &&
+        data.ratingSum >= 0 &&
+        data.ratingSum <= 50000 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidReview(data, placeId) {
+      return data.keys().hasAll([
+          'ownerId',
+          'placeId',
+          'rating',
+          'comment',
+          'photos',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'ownerId',
+          'placeId',
+          'rating',
+          'comment',
+          'photos',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.ownerId is string &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.placeId is string &&
+        isValidId(data.placeId) &&
+        data.placeId == placeId &&
+        data.rating is number &&
+        data.rating >= 1 &&
+        data.rating <= 5 &&
+        data.comment is string &&
+        data.comment.size() >= 2 &&
+        data.comment.size() <= 1500 &&
+        data.photos is list &&
+        data.photos.size() <= 2 &&
+        (data.photos.size() == 0 || (data.photos[0] is string && data.photos[0].size() <= 160000)) &&
+        (data.photos.size() < 2 || (data.photos[1] is string && data.photos[1].size() <= 160000)) &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    match /users/{userId}/places/{placeId} {
+      allow get: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        existing().ownerId == request.auth.uid;
+
+      allow list: if isValidId(userId) &&
+        isVerifiedOwner(userId) &&
+        resource.data.ownerId == request.auth.uid;
+
+      allow create: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        isValidPlace(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        isValidPlace(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          incoming().diff(existing()).affectedKeys().hasOnly(['mapsUrl', 'updatedAt']) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'avgRating',
+            'reviewCount',
+            'ratingSum',
+            'latestComment',
+            'coverImage',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        existing().ownerId == request.auth.uid;
+
+      match /reviews/{reviewId} {
+        allow get: if isValidId(userId) &&
+          isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedOwner(userId) &&
+          existing().ownerId == request.auth.uid;
+
+        allow list: if isValidId(userId) &&
+          isValidId(placeId) &&
+          isVerifiedOwner(userId) &&
+          resource.data.ownerId == request.auth.uid;
+
+        allow create: if isValidId(userId) &&
+          isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedOwner(userId) &&
+          isValidReview(incoming(), placeId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          getAfter(/databases/$(database)/documents/users/$(userId)/places/$(placeId)).data.ownerId == request.auth.uid;
+
+        allow update: if false;
+
+        allow delete: if isValidId(userId) &&
+          isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedOwner(userId) &&
+          existing().ownerId == request.auth.uid;
+      }
+    }
+  }
+}
