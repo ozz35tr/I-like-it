@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  browserPopupRedirectResolver,
   getRedirectResult,
   onAuthStateChanged,
   signInWithPopup,
@@ -75,6 +76,36 @@ function renderStars(avgRating: number) {
   );
 }
 
+function isInAppBrowser(): boolean {
+  if (typeof navigator === 'undefined') return false;
+  const ua = navigator.userAgent || '';
+  return /FBAN|FBAV|Instagram|Line\/|MicroMessenger|WhatsApp|Snapchat|TikTok/i.test(ua);
+}
+
+function formatAuthErrorMessage(err: unknown): string {
+  const code = (err as { code?: string } | null)?.code || '';
+  const msg = err instanceof Error ? err.message : String(err || '');
+
+  if (code === 'auth/popup-closed-by-user' || code === 'auth/cancelled-popup-request') {
+    return 'Giriş penceresi kapatıldı. Devam etmek için tekrar deneyin.';
+  }
+  if (code === 'auth/unauthorized-domain') {
+    const host = typeof window !== 'undefined' ? window.location.hostname : '';
+    return `Bu site adresi (${host}) Firebase Yetkili Alan Adları (Authorized domains) listesinde ekli değil.`;
+  }
+  if (
+    /Requested action is invalid|missing initial state|missing-or-invalid-nonce|invalid-action-code/i.test(
+      `${code} ${msg}`
+    )
+  ) {
+    return 'Mobil tarayıcı çerez/depolama kısıtlaması nedeniyle yönlendirme tamamlanamadı. Sayfayı Safari veya Chrome üzerinden doğrudan açıp Ortak Liste düğmesine tekrar dokunun.';
+  }
+  if (isInAppBrowser()) {
+    return 'Google, uygulama içi tarayıcılardan (WhatsApp/Instagram vb.) girişe izin vermiyor. Bağlantıyı Safari veya Chrome ile açın.';
+  }
+  return msg ? `Giriş yapılamadı: ${msg}` : 'Google ile giriş yapılamadı.';
+}
+
 export default function App() {
   const [user, setUser] = useState<User | null>(null);
   const [authReady, setAuthReady] = useState(false);
@@ -109,9 +140,9 @@ export default function App() {
   );
 
   useEffect(() => {
-    void getRedirectResult(auth).catch((err) => {
-      if (err instanceof Error && err.message) {
-        setAuthError(`Giriş tamamlanamadı: ${err.message}`);
+    void getRedirectResult(auth, browserPopupRedirectResolver).catch((err) => {
+      if (err) {
+        setAuthError(formatAuthErrorMessage(err));
       }
     });
 
@@ -174,10 +205,17 @@ export default function App() {
   }, [allPlaces, detailPlace]);
 
   const handleSignIn = async () => {
+    if (isInAppBrowser()) {
+      setAuthError(
+        'Google, uygulama içi tarayıcılardan (WhatsApp/Instagram vb.) girişe izin vermiyor. Sağ alttan/üstten Safari veya Chrome ile açın.'
+      );
+      return;
+    }
+
     setSigningIn(true);
     setAuthError(null);
     try {
-      await signInWithPopup(auth, googleProvider);
+      await signInWithPopup(auth, googleProvider, browserPopupRedirectResolver);
     } catch (err) {
       const code = (err as { code?: string } | null)?.code || '';
       if (
@@ -185,23 +223,13 @@ export default function App() {
         code === 'auth/operation-not-supported-in-this-environment'
       ) {
         try {
-          await signInWithRedirect(auth, googleProvider);
+          await signInWithRedirect(auth, googleProvider, browserPopupRedirectResolver);
           return;
         } catch (redirectErr) {
-          setAuthError(
-            redirectErr instanceof Error
-              ? `Giriş yapılamadı: ${redirectErr.message}`
-              : 'Google ile giriş yapılamadı.'
-          );
+          setAuthError(formatAuthErrorMessage(redirectErr));
         }
-      } else if (code === 'auth/popup-closed-by-user') {
-        setAuthError('Giriş penceresi kapatıldı. Devam etmek için tekrar deneyin.');
       } else {
-        setAuthError(
-          err instanceof Error
-            ? `Giriş yapılamadı: ${err.message}`
-            : 'Google ile giriş yapılamadı.'
-        );
+        setAuthError(formatAuthErrorMessage(err));
       }
     } finally {
       setSigningIn(false);

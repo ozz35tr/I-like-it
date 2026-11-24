@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/__/auth/(.*)",
+      "destination": "https://my-project-1520322965491.firebaseapp.com/__/auth/$1"
+    },
+    {
+      "source": "/((?!api/|__/).*)",
+      "destination": "/index.html"
+    }
+  ]
+}

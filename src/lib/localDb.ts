@@ -31,6 +31,14 @@ const STORE_PLACES = 'places';
 const STORE_REVIEWS = 'reviews';
 const LOCAL_OWNER_ID = 'local-device';
 const LOCAL_CHANGE_EVENT = 'mekannotu-local-db-changed';
+const FALLBACK_STORAGE_KEY = 'mekannotu_local_fallback_v1';
+
+interface FallbackStoreData {
+  places: PlaceItem[];
+  reviews: ReviewItem[];
+}
+
+let memoryFallback: FallbackStoreData = { places: [], reviews: [] };
 
 function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -45,21 +53,65 @@ function notifyLocalChange(): void {
   }
 }
 
+function readFallbackStore(): FallbackStoreData {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(FALLBACK_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as Partial<FallbackStoreData>;
+        return {
+          places: Array.isArray(parsed.places) ? parsed.places : [],
+          reviews: Array.isArray(parsed.reviews) ? parsed.reviews : [],
+        };
+      }
+    }
+  } catch {
+    // Ignore storage access restriction and use memory fallback
+  }
+  return memoryFallback;
+}
+
+function writeFallbackStore(data: FallbackStoreData): void {
+  memoryFallback = data;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(FALLBACK_STORAGE_KEY, JSON.stringify(data));
+    }
+  } catch {
+    // Ignore quota/private-mode localStorage error; memoryFallback keeps session state
+  }
+}
+
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const req = indexedDB.open(DB_NAME, DB_VERSION);
-    req.onupgradeneeded = () => {
-      const db = req.result;
-      if (!db.objectStoreNames.contains(STORE_PLACES)) {
-        db.createObjectStore(STORE_PLACES, { keyPath: 'id' });
-      }
-      if (!db.objectStoreNames.contains(STORE_REVIEWS)) {
-        const reviewStore = db.createObjectStore(STORE_REVIEWS, { keyPath: 'id' });
-        reviewStore.createIndex('placeId', 'placeId', { unique: false });
-      }
-    };
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error || new Error('Yerel veritabanı açılamadı.'));
+    if (typeof indexedDB === 'undefined') {
+      reject(new Error('IndexedDB desteklenmiyor.'));
+      return;
+    }
+    try {
+      const req = indexedDB.open(DB_NAME, DB_VERSION);
+      req.onupgradeneeded = () => {
+        const db = req.result;
+        if (!db.objectStoreNames.contains(STORE_PLACES)) {
+          db.createObjectStore(STORE_PLACES, { keyPath: 'id' });
+        }
+        if (!db.objectStoreNames.contains(STORE_REVIEWS)) {
+          const reviewStore = db.createObjectStore(STORE_REVIEWS, { keyPath: 'id' });
+          reviewStore.createIndex('placeId', 'placeId', { unique: false });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => {
+          db.close();
+        };
+        resolve(db);
+      };
+      req.onerror = () => reject(req.error || new Error('Yerel veritabanı açılamadı.'));
+      req.onblocked = () => reject(new Error('Yerel veritabanı meşgul.'));
+    } catch (err) {
+      reject(err instanceof Error ? err : new Error(String(err)));
+    }
   });
 }
 
@@ -139,26 +191,37 @@ function normalizeReview(raw: Partial<ReviewItem> & { id: string; placeId: strin
 }
 
 export async function listPlaces(): Promise<PlaceItem[]> {
-  if (typeof indexedDB === 'undefined') return [];
-  const db = await openDb();
-  if (!db.objectStoreNames.contains(STORE_PLACES)) return [];
-  const tx = db.transaction(STORE_PLACES, 'readonly');
-  const raw = await reqToPromise<Array<Partial<PlaceItem> & { id: string }>>(
-    tx.objectStore(STORE_PLACES).getAll()
-  );
-  return raw.map(normalizePlace).sort((a, b) => b.updatedAt - a.updatedAt);
+  try {
+    const db = await openDb();
+    if (!db.objectStoreNames.contains(STORE_PLACES)) return [];
+    const tx = db.transaction(STORE_PLACES, 'readonly');
+    const raw = await reqToPromise<Array<Partial<PlaceItem> & { id: string }>>(
+      tx.objectStore(STORE_PLACES).getAll()
+    );
+    return raw.map(normalizePlace).sort((a, b) => b.updatedAt - a.updatedAt);
+  } catch {
+    return readFallbackStore()
+      .places.map((p) => normalizePlace(p))
+      .sort((a, b) => b.updatedAt - a.updatedAt);
+  }
 }
 
 export async function listLocalPlaceReviews(placeId: string): Promise<ReviewItem[]> {
-  if (typeof indexedDB === 'undefined') return [];
-  const db = await openDb();
-  if (!db.objectStoreNames.contains(STORE_REVIEWS)) return [];
-  const tx = db.transaction(STORE_REVIEWS, 'readonly');
-  const index = tx.objectStore(STORE_REVIEWS).index('placeId');
-  const raw = await reqToPromise<Array<Partial<ReviewItem> & { id: string; placeId: string }>>(
-    index.getAll(placeId)
-  );
-  return raw.map(normalizeReview).sort((a, b) => b.createdAt - a.createdAt);
+  try {
+    const db = await openDb();
+    if (!db.objectStoreNames.contains(STORE_REVIEWS)) return [];
+    const tx = db.transaction(STORE_REVIEWS, 'readonly');
+    const index = tx.objectStore(STORE_REVIEWS).index('placeId');
+    const raw = await reqToPromise<Array<Partial<ReviewItem> & { id: string; placeId: string }>>(
+      index.getAll(placeId)
+    );
+    return raw.map(normalizeReview).sort((a, b) => b.createdAt - a.createdAt);
+  } catch {
+    return readFallbackStore()
+      .reviews.filter((r) => r.placeId === placeId)
+      .map((r) => normalizeReview(r))
+      .sort((a, b) => b.createdAt - a.createdAt);
+  }
 }
 
 export function subscribeLocalPlaces(
@@ -218,7 +281,6 @@ export async function createLocalPlaceWithInitialReview(input: {
   initialComment: string;
   photos: string[];
 }): Promise<string> {
-  const db = await openDb();
   const placeId = generateId();
   const reviewId = generateId();
   const now = Date.now();
@@ -258,28 +320,58 @@ export async function createLocalPlaceWithInitialReview(input: {
     updatedAt: now,
   };
 
-  const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
-  tx.objectStore(STORE_PLACES).put(place);
-  tx.objectStore(STORE_REVIEWS).put(review);
-  await txDone(tx);
+  try {
+    const db = await openDb();
+    const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
+    tx.objectStore(STORE_PLACES).put(place);
+    tx.objectStore(STORE_REVIEWS).put(review);
+    await txDone(tx);
+  } catch {
+    const data = readFallbackStore();
+    data.places.unshift(place);
+    data.reviews.unshift(review);
+    writeFallbackStore(data);
+  }
+
   notifyLocalChange();
   return placeId;
 }
 
 export async function updateLocalPlaceMapsUrl(placeId: string, mapsUrl: string): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction(STORE_PLACES, 'readwrite');
-  const store = tx.objectStore(STORE_PLACES);
-  const existing = await reqToPromise<(Partial<PlaceItem> & { id: string }) | undefined>(
-    store.get(placeId)
-  );
-  if (!existing) throw new Error('Mekan bulunamadı.');
+  const cleanMapsUrl = mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
+  const now = Date.now();
 
-  const updated = normalizePlace(existing);
-  updated.mapsUrl = mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
-  updated.updatedAt = Date.now();
-  store.put(updated);
-  await txDone(tx);
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_PLACES, 'readwrite');
+      const store = tx.objectStore(STORE_PLACES);
+      const getReq = store.get(placeId);
+      getReq.onsuccess = () => {
+        const existing = getReq.result as (Partial<PlaceItem> & { id: string }) | undefined;
+        if (!existing) {
+          reject(new Error('Mekan bulunamadı.'));
+          return;
+        }
+        const updated = normalizePlace(existing);
+        updated.mapsUrl = cleanMapsUrl;
+        updated.updatedAt = now;
+        store.put(updated);
+      };
+      getReq.onerror = () => reject(getReq.error || new Error('Mekan güncellenemedi.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Mekan bulunamadı.') throw err;
+    const data = readFallbackStore();
+    const idx = data.places.findIndex((p) => p.id === placeId);
+    if (idx === -1) throw new Error('Mekan bulunamadı.');
+    data.places[idx] = { ...normalizePlace(data.places[idx]), mapsUrl: cleanMapsUrl, updatedAt: now };
+    writeFallbackStore(data);
+  }
+
   notifyLocalChange();
 }
 
@@ -289,31 +381,11 @@ export async function addLocalReviewToPlace(input: {
   comment: string;
   photos: string[];
 }): Promise<void> {
-  const db = await openDb();
   const now = Date.now();
   const cleanComment = input.comment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
   const cleanPhotos = input.photos
     .filter((p) => typeof p === 'string' && p.length <= 160000)
     .slice(0, STORAGE_LIMITS.MAX_PHOTOS);
-
-  const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
-  const placeStore = tx.objectStore(STORE_PLACES);
-  const reviewStore = tx.objectStore(STORE_REVIEWS);
-
-  const existing = await reqToPromise<(Partial<PlaceItem> & { id: string }) | undefined>(
-    placeStore.get(input.placeId)
-  );
-  if (!existing) throw new Error('Mekan bulunamadı.');
-
-  const place = normalizePlace(existing);
-  const nextCount = place.reviewCount + 1;
-  const nextSum = place.ratingSum + input.rating;
-  place.reviewCount = nextCount;
-  place.ratingSum = nextSum;
-  place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
-  place.latestComment = cleanComment;
-  place.coverImage = place.coverImage || cleanPhotos[0] || '';
-  place.updatedAt = now;
 
   const review: ReviewItem = {
     id: generateId(),
@@ -327,60 +399,153 @@ export async function addLocalReviewToPlace(input: {
     updatedAt: now,
   };
 
-  placeStore.put(place);
-  reviewStore.put(review);
-  await txDone(tx);
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
+      const placeStore = tx.objectStore(STORE_PLACES);
+      const reviewStore = tx.objectStore(STORE_REVIEWS);
+
+      const getReq = placeStore.get(input.placeId);
+      getReq.onsuccess = () => {
+        const existing = getReq.result as (Partial<PlaceItem> & { id: string }) | undefined;
+        if (!existing) {
+          reject(new Error('Mekan bulunamadı.'));
+          return;
+        }
+        const place = normalizePlace(existing);
+        const nextCount = place.reviewCount + 1;
+        const nextSum = place.ratingSum + input.rating;
+        place.reviewCount = nextCount;
+        place.ratingSum = nextSum;
+        place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
+        place.latestComment = cleanComment;
+        place.coverImage = place.coverImage || cleanPhotos[0] || '';
+        place.updatedAt = now;
+
+        placeStore.put(place);
+        reviewStore.put(review);
+      };
+      getReq.onerror = () => reject(getReq.error || new Error('Mekan okunamadı.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Mekan bulunamadı.') throw err;
+    const data = readFallbackStore();
+    const idx = data.places.findIndex((p) => p.id === input.placeId);
+    if (idx === -1) throw new Error('Mekan bulunamadı.');
+    const place = normalizePlace(data.places[idx]);
+    const nextCount = place.reviewCount + 1;
+    const nextSum = place.ratingSum + input.rating;
+    place.reviewCount = nextCount;
+    place.ratingSum = nextSum;
+    place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
+    place.latestComment = cleanComment;
+    place.coverImage = place.coverImage || cleanPhotos[0] || '';
+    place.updatedAt = now;
+    data.places[idx] = place;
+    data.reviews.unshift(review);
+    writeFallbackStore(data);
+  }
+
   notifyLocalChange();
 }
 
 export async function deleteLocalReviewFromPlace(placeId: string, reviewId: string): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
-  const placeStore = tx.objectStore(STORE_PLACES);
-  const reviewStore = tx.objectStore(STORE_REVIEWS);
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
+      const placeStore = tx.objectStore(STORE_PLACES);
+      const reviewStore = tx.objectStore(STORE_REVIEWS);
 
-  reviewStore.delete(reviewId);
-  const allReviews = await reqToPromise<Array<Partial<ReviewItem> & { id: string; placeId: string }>>(
-    reviewStore.index('placeId').getAll(placeId)
-  );
-  const remaining = allReviews
-    .filter((r) => r.id !== reviewId)
-    .map(normalizeReview)
-    .sort((a, b) => b.createdAt - a.createdAt);
+      reviewStore.delete(reviewId);
+      const listReq = reviewStore.index('placeId').getAll(placeId);
+      listReq.onsuccess = () => {
+        const allReviews = (listReq.result || []) as Array<
+          Partial<ReviewItem> & { id: string; placeId: string }
+        >;
+        const remaining = allReviews
+          .filter((r) => r.id !== reviewId)
+          .map(normalizeReview)
+          .sort((a, b) => b.createdAt - a.createdAt);
 
-  const existing = await reqToPromise<(Partial<PlaceItem> & { id: string }) | undefined>(
-    placeStore.get(placeId)
-  );
-  if (existing) {
-    const place = normalizePlace(existing);
-    const nextCount = remaining.length;
-    const nextSum = remaining.reduce((acc, r) => acc + r.rating, 0);
-    place.reviewCount = nextCount;
-    place.ratingSum = nextSum;
-    place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
-    place.latestComment = remaining[0]?.comment ?? '';
-    place.updatedAt = Date.now();
-    placeStore.put(place);
+        const placeReq = placeStore.get(placeId);
+        placeReq.onsuccess = () => {
+          const existing = placeReq.result as (Partial<PlaceItem> & { id: string }) | undefined;
+          if (existing) {
+            const place = normalizePlace(existing);
+            const nextCount = remaining.length;
+            const nextSum = remaining.reduce((acc, r) => acc + r.rating, 0);
+            place.reviewCount = nextCount;
+            place.ratingSum = nextSum;
+            place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
+            place.latestComment = remaining[0]?.comment ?? '';
+            place.updatedAt = Date.now();
+            placeStore.put(place);
+          }
+        };
+      };
+      listReq.onerror = () => reject(listReq.error || new Error('Yorum silinemedi.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch {
+    const data = readFallbackStore();
+    data.reviews = data.reviews.filter((r) => r.id !== reviewId);
+    const remaining = data.reviews
+      .filter((r) => r.placeId === placeId)
+      .map(normalizeReview)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const idx = data.places.findIndex((p) => p.id === placeId);
+    if (idx !== -1) {
+      const place = normalizePlace(data.places[idx]);
+      const nextCount = remaining.length;
+      const nextSum = remaining.reduce((acc, r) => acc + r.rating, 0);
+      place.reviewCount = nextCount;
+      place.ratingSum = nextSum;
+      place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
+      place.latestComment = remaining[0]?.comment ?? '';
+      place.updatedAt = Date.now();
+      data.places[idx] = place;
+    }
+    writeFallbackStore(data);
   }
 
-  await txDone(tx);
   notifyLocalChange();
 }
 
 export async function deleteLocalPlace(placeId: string): Promise<void> {
-  const db = await openDb();
-  const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
-  const placeStore = tx.objectStore(STORE_PLACES);
-  const reviewStore = tx.objectStore(STORE_REVIEWS);
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
+      const placeStore = tx.objectStore(STORE_PLACES);
+      const reviewStore = tx.objectStore(STORE_REVIEWS);
 
-  const reviews = await reqToPromise<Array<{ id: string }>>(
-    reviewStore.index('placeId').getAll(placeId)
-  );
-  for (const rev of reviews) {
-    reviewStore.delete(rev.id);
+      const revReq = reviewStore.index('placeId').getAll(placeId);
+      revReq.onsuccess = () => {
+        const reviews = (revReq.result || []) as Array<{ id: string }>;
+        for (const rev of reviews) {
+          reviewStore.delete(rev.id);
+        }
+        placeStore.delete(placeId);
+      };
+      revReq.onerror = () => reject(revReq.error || new Error('Mekan silinemedi.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch {
+    const data = readFallbackStore();
+    data.places = data.places.filter((p) => p.id !== placeId);
+    data.reviews = data.reviews.filter((r) => r.placeId !== placeId);
+    writeFallbackStore(data);
   }
-  placeStore.delete(placeId);
-  await txDone(tx);
+
   notifyLocalChange();
 }
 
@@ -390,19 +555,29 @@ export async function exportDatabaseBackup(): Promise<{
   places: LegacyLocalPlace[];
   reviews: LegacyLocalReview[];
 }> {
-  const db = await openDb();
-  const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readonly');
-  const [places, reviews] = await Promise.all([
-    reqToPromise<LegacyLocalPlace[]>(tx.objectStore(STORE_PLACES).getAll()),
-    reqToPromise<LegacyLocalReview[]>(tx.objectStore(STORE_REVIEWS).getAll()),
-  ]);
+  try {
+    const db = await openDb();
+    const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readonly');
+    const [places, reviews] = await Promise.all([
+      reqToPromise<LegacyLocalPlace[]>(tx.objectStore(STORE_PLACES).getAll()),
+      reqToPromise<LegacyLocalReview[]>(tx.objectStore(STORE_REVIEWS).getAll()),
+    ]);
 
-  return {
-    version: 2,
-    exportedAt: new Date().toISOString(),
-    places,
-    reviews,
-  };
+    return {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      places,
+      reviews,
+    };
+  } catch {
+    const data = readFallbackStore();
+    return {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      places: data.places,
+      reviews: data.reviews,
+    };
+  }
 }
 
 export async function importBackupToLocal(jsonText: string): Promise<number> {
@@ -468,16 +643,20 @@ export async function importBackupToLocal(jsonText: string): Promise<number> {
 }
 
 export async function clearLegacyLocalDatabase(): Promise<void> {
-  if (typeof indexedDB === 'undefined') return;
-  const db = await openDb();
-  const storeNames = [STORE_PLACES, STORE_REVIEWS].filter((s) =>
-    db.objectStoreNames.contains(s)
-  );
-  if (storeNames.length === 0) return;
-  const tx = db.transaction(storeNames, 'readwrite');
-  for (const name of storeNames) {
-    tx.objectStore(name).clear();
+  writeFallbackStore({ places: [], reviews: [] });
+  try {
+    const db = await openDb();
+    const storeNames = [STORE_PLACES, STORE_REVIEWS].filter((s) =>
+      db.objectStoreNames.contains(s)
+    );
+    if (storeNames.length === 0) return;
+    const tx = db.transaction(storeNames, 'readwrite');
+    for (const name of storeNames) {
+      tx.objectStore(name).clear();
+    }
+    await txDone(tx);
+  } catch {
+    // Ignore IDB clear failure when fallback already cleared
   }
-  await txDone(tx);
   notifyLocalChange();
 }
