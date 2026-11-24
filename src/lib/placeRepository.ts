@@ -24,94 +24,99 @@ import {
   type CreatePlaceInput,
 } from './placesService';
 
+export interface CloudActor {
+  uid: string;
+  authorName: string;
+}
+
 export function subscribeUserOrLocalPlaces(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   onData: (places: PlaceItem[]) => void,
   onError: (error: Error) => void
 ): () => void {
-  if (userId) {
-    return subscribePlaces(userId, onData, onError);
+  if (actor) {
+    return subscribePlaces(onData, onError);
   }
   return subscribeLocalPlaces(onData, onError);
 }
 
 export function subscribeUserOrLocalPlaceReviews(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   placeId: string,
   onData: (reviews: ReviewItem[]) => void,
   onError: (error: Error) => void
 ): () => void {
-  if (userId) {
-    return subscribePlaceReviews(userId, placeId, onData, onError);
+  if (actor) {
+    return subscribePlaceReviews(placeId, onData, onError);
   }
   return subscribeLocalPlaceReviews(placeId, onData, onError);
 }
 
 export async function createPlace(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   input: CreatePlaceInput
 ): Promise<string> {
-  if (userId) {
-    return createPlaceWithInitialReview(userId, input);
+  if (actor) {
+    return createPlaceWithInitialReview(actor.uid, actor.authorName, input);
   }
   return createLocalPlaceWithInitialReview(input);
 }
 
 export async function updateMapsUrl(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   placeId: string,
   mapsUrl: string
 ): Promise<void> {
-  if (userId) {
-    return updatePlaceMapsUrl(userId, placeId, mapsUrl);
+  if (actor) {
+    return updatePlaceMapsUrl(placeId, mapsUrl);
   }
   return updateLocalPlaceMapsUrl(placeId, mapsUrl);
 }
 
 export async function addReview(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   input: AddReviewInput
 ): Promise<void> {
-  if (userId) {
-    return addReviewToPlace(userId, input);
+  if (actor) {
+    return addReviewToPlace(actor.uid, actor.authorName, input);
   }
   return addLocalReviewToPlace(input);
 }
 
 export async function deleteReview(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   placeId: string,
   reviewId: string
 ): Promise<void> {
-  if (userId) {
-    return deleteReviewFromPlace(userId, placeId, reviewId);
+  if (actor) {
+    return deleteReviewFromPlace(placeId, reviewId);
   }
   return deleteLocalReviewFromPlace(placeId, reviewId);
 }
 
 export async function removePlace(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   placeId: string
 ): Promise<void> {
-  if (userId) {
-    return deletePlace(userId, placeId);
+  if (actor) {
+    return deletePlace(actor.uid, placeId);
   }
   return deleteLocalPlace(placeId);
 }
 
-export async function exportBackup(userId: string | null | undefined) {
-  if (userId) {
-    return exportFirestoreBackup(userId);
+export async function exportBackup(actor: CloudActor | null | undefined) {
+  if (actor) {
+    return exportFirestoreBackup();
   }
   return exportDatabaseBackup();
 }
 
 export async function importBackup(
-  userId: string | null | undefined,
+  actor: CloudActor | null | undefined,
   jsonText: string
 ): Promise<number> {
-  if (userId) {
-    return importBackupToFirestore(userId, jsonText);
+  if (actor) {
+    return importBackupToFirestore(actor.uid, actor.authorName, jsonText);
   }
   return importBackupToLocal(jsonText);
 }

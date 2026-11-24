@@ -12,7 +12,12 @@ import {
   writeBatch,
   type DocumentData,
 } from 'firebase/firestore';
-import { STORAGE_LIMITS, type PlaceCategory, type PlaceItem, type ReviewItem } from '../types/place';
+import {
+  STORAGE_LIMITS,
+  type PlaceCategory,
+  type PlaceItem,
+  type ReviewItem,
+} from '../types/place';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
 function generateId(): string {
@@ -20,6 +25,18 @@ function generateId(): string {
     return crypto.randomUUID().replace(/-/g, '');
   }
   return `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+}
+
+export function resolveSafeAuthorName(
+  displayName?: string | null,
+  email?: string | null
+): string {
+  const candidate =
+    displayName?.trim() ||
+    (email ? email.split('@')[0]?.trim() : '') ||
+    'Kullanıcı';
+  const clean = candidate.slice(0, STORAGE_LIMITS.AUTHOR_NAME_MAX).trim();
+  return clean.length >= 1 ? clean : 'Kullanıcı';
 }
 
 function toMillis(value: unknown): number {
@@ -32,6 +49,10 @@ function mapPlaceDoc(id: string, data: DocumentData): PlaceItem {
   return {
     id,
     ownerId: typeof data.ownerId === 'string' ? data.ownerId : '',
+    authorName:
+      typeof data.authorName === 'string' && data.authorName.trim()
+        ? data.authorName.trim().slice(0, STORAGE_LIMITS.AUTHOR_NAME_MAX)
+        : 'Kullanıcı',
     name: typeof data.name === 'string' ? data.name : 'Mekan',
     category:
       data.category === 'restaurant' ||
@@ -55,6 +76,10 @@ function mapReviewDoc(id: string, data: DocumentData): ReviewItem {
   return {
     id,
     ownerId: typeof data.ownerId === 'string' ? data.ownerId : '',
+    authorName:
+      typeof data.authorName === 'string' && data.authorName.trim()
+        ? data.authorName.trim().slice(0, STORAGE_LIMITS.AUTHOR_NAME_MAX)
+        : 'Kullanıcı',
     placeId: typeof data.placeId === 'string' ? data.placeId : '',
     rating:
       data.rating === 1 || data.rating === 2 || data.rating === 3 || data.rating === 4 || data.rating === 5
@@ -70,12 +95,11 @@ function mapReviewDoc(id: string, data: DocumentData): ReviewItem {
 }
 
 export function subscribePlaces(
-  userId: string,
   onData: (places: PlaceItem[]) => void,
   onError: (error: Error) => void
 ): () => void {
-  const path = `users/${userId}/places`;
-  const q = query(collection(db, path), where('ownerId', '==', userId));
+  const path = 'places';
+  const q = query(collection(db, path), where('visibility', '==', 'shared'));
 
   return onSnapshot(
     q,
@@ -96,13 +120,12 @@ export function subscribePlaces(
 }
 
 export function subscribePlaceReviews(
-  userId: string,
   placeId: string,
   onData: (reviews: ReviewItem[]) => void,
   onError: (error: Error) => void
 ): () => void {
-  const path = `users/${userId}/places/${placeId}/reviews`;
-  const q = query(collection(db, path), where('ownerId', '==', userId));
+  const path = `places/${placeId}/reviews`;
+  const q = query(collection(db, path), where('visibility', '==', 'shared'));
 
   return onSnapshot(
     q,
@@ -133,13 +156,15 @@ export interface CreatePlaceInput {
 
 export async function createPlaceWithInitialReview(
   userId: string,
+  authorName: string,
   input: CreatePlaceInput
 ): Promise<string> {
   const placeId = generateId();
   const reviewId = generateId();
-  const placePath = `users/${userId}/places/${placeId}`;
-  const reviewPath = `users/${userId}/places/${placeId}/reviews/${reviewId}`;
+  const placePath = `places/${placeId}`;
+  const reviewPath = `places/${placeId}/reviews/${reviewId}`;
 
+  const cleanAuthor = resolveSafeAuthorName(authorName);
   const cleanName = input.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX);
   const cleanMapsUrl = (input.mapsUrl || '').trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
   const cleanComment = input.initialComment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
@@ -151,6 +176,8 @@ export async function createPlaceWithInitialReview(
   const batch = writeBatch(db);
   batch.set(doc(db, placePath), {
     ownerId: userId,
+    authorName: cleanAuthor,
+    visibility: 'shared',
     name: cleanName,
     category: input.category,
     mapsUrl: cleanMapsUrl,
@@ -165,6 +192,8 @@ export async function createPlaceWithInitialReview(
 
   batch.set(doc(db, reviewPath), {
     ownerId: userId,
+    authorName: cleanAuthor,
+    visibility: 'shared',
     placeId,
     rating: input.initialRating,
     comment: cleanComment,
@@ -182,11 +211,10 @@ export async function createPlaceWithInitialReview(
 }
 
 export async function updatePlaceMapsUrl(
-  userId: string,
   placeId: string,
   mapsUrl: string
 ): Promise<void> {
-  const placePath = `users/${userId}/places/${placeId}`;
+  const placePath = `places/${placeId}`;
   try {
     await updateDoc(doc(db, placePath), {
       mapsUrl: mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX),
@@ -206,12 +234,14 @@ export interface AddReviewInput {
 
 export async function addReviewToPlace(
   userId: string,
+  authorName: string,
   input: AddReviewInput
 ): Promise<void> {
   const reviewId = generateId();
-  const placePath = `users/${userId}/places/${input.placeId}`;
+  const placePath = `places/${input.placeId}`;
   const reviewPath = `${placePath}/reviews/${reviewId}`;
 
+  const cleanAuthor = resolveSafeAuthorName(authorName);
   const cleanComment = input.comment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
   const cleanPhotos = input.photos
     .filter((p) => typeof p === 'string' && p.length <= 160000)
@@ -234,6 +264,8 @@ export async function addReviewToPlace(
 
       tx.set(doc(db, reviewPath), {
         ownerId: userId,
+        authorName: cleanAuthor,
+        visibility: 'shared',
         placeId: input.placeId,
         rating: input.rating,
         comment: cleanComment,
@@ -257,17 +289,16 @@ export async function addReviewToPlace(
 }
 
 export async function deleteReviewFromPlace(
-  userId: string,
   placeId: string,
   reviewId: string
 ): Promise<void> {
-  const placePath = `users/${userId}/places/${placeId}`;
+  const placePath = `places/${placeId}`;
   const reviewsPath = `${placePath}/reviews`;
   const reviewPath = `${reviewsPath}/${reviewId}`;
 
   try {
     const reviewsSnap = await getDocs(
-      query(collection(db, reviewsPath), where('ownerId', '==', userId))
+      query(collection(db, reviewsPath), where('visibility', '==', 'shared'))
     );
     const remaining = reviewsSnap.docs
       .filter((d) => d.id !== reviewId)
@@ -295,19 +326,93 @@ export async function deleteReviewFromPlace(
 }
 
 export async function deletePlace(userId: string, placeId: string): Promise<void> {
-  const placePath = `users/${userId}/places/${placeId}`;
+  const placePath = `places/${placeId}`;
   const reviewsPath = `${placePath}/reviews`;
 
   try {
     const reviewsSnap = await getDocs(
-      query(collection(db, reviewsPath), where('ownerId', '==', userId))
+      query(collection(db, reviewsPath), where('visibility', '==', 'shared'))
     );
     const batch = writeBatch(db);
-    reviewsSnap.docs.forEach((d) => batch.delete(d.ref));
+    reviewsSnap.docs.forEach((d) => {
+      if (d.data().ownerId === userId) {
+        batch.delete(d.ref);
+      }
+    });
     batch.delete(doc(db, placePath));
     await batch.commit();
   } catch (error) {
     handleFirestoreError(error, OperationType.DELETE, placePath);
+  }
+}
+
+export async function countLegacyPersonalCloudPlaces(userId: string): Promise<number> {
+  const legacyPath = `users/${userId}/places`;
+  try {
+    const snap = await getDocs(
+      query(collection(db, legacyPath), where('ownerId', '==', userId))
+    );
+    return snap.size;
+  } catch {
+    return 0;
+  }
+}
+
+export async function migrateLegacyPersonalCloudToShared(
+  userId: string,
+  authorName: string
+): Promise<number> {
+  const legacyPath = `users/${userId}/places`;
+  try {
+    const placesSnap = await getDocs(
+      query(collection(db, legacyPath), where('ownerId', '==', userId))
+    );
+    if (placesSnap.empty) return 0;
+
+    let migrated = 0;
+    for (const pDoc of placesSnap.docs) {
+      const p = mapPlaceDoc(pDoc.id, pDoc.data());
+      const reviewsPath = `${legacyPath}/${pDoc.id}/reviews`;
+      const revSnap = await getDocs(
+        query(collection(db, reviewsPath), where('ownerId', '==', userId))
+      );
+      const reviews = revSnap.docs
+        .map((d) => mapReviewDoc(d.id, d.data()))
+        .sort((a, b) => a.createdAt - b.createdAt);
+
+      const firstRev = reviews[0];
+      const newPlaceId = await createPlaceWithInitialReview(userId, authorName, {
+        name: p.name,
+        category: p.category,
+        mapsUrl: p.mapsUrl,
+        initialRating: firstRev?.rating || 5,
+        initialComment:
+          firstRev?.comment ||
+          (p.latestComment.length >= 2 ? p.latestComment : 'Ziyaret notu'),
+        photos: firstRev?.photos || (p.coverImage ? [p.coverImage] : []),
+      });
+
+      for (const extraRev of reviews.slice(1)) {
+        await addReviewToPlace(userId, authorName, {
+          placeId: newPlaceId,
+          rating: extraRev.rating,
+          comment: extraRev.comment,
+          photos: extraRev.photos,
+        });
+      }
+
+      // Clean up legacy personal docs after successful copy
+      const cleanupBatch = writeBatch(db);
+      revSnap.docs.forEach((d) => cleanupBatch.delete(d.ref));
+      cleanupBatch.delete(pDoc.ref);
+      await cleanupBatch.commit();
+
+      migrated += 1;
+    }
+
+    return migrated;
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, legacyPath);
   }
 }
 
@@ -318,16 +423,16 @@ export interface BackupPayload {
   reviews: ReviewItem[];
 }
 
-export async function exportFirestoreBackup(userId: string): Promise<BackupPayload> {
-  const placesPath = `users/${userId}/places`;
+export async function exportFirestoreBackup(): Promise<BackupPayload> {
+  const placesPath = 'places';
   try {
     const placesSnap = await getDocs(
-      query(collection(db, placesPath), where('ownerId', '==', userId))
+      query(collection(db, placesPath), where('visibility', '==', 'shared'))
     );
     const places = placesSnap.docs.map((d) => mapPlaceDoc(d.id, d.data()));
     const reviewSnaps = await Promise.all(
       places.map((p) =>
-        getDocs(query(collection(db, `${placesPath}/${p.id}/reviews`), where('ownerId', '==', userId)))
+        getDocs(query(collection(db, `${placesPath}/${p.id}/reviews`), where('visibility', '==', 'shared')))
       )
     );
     const reviews = reviewSnaps.flatMap((snap) =>
@@ -335,7 +440,7 @@ export async function exportFirestoreBackup(userId: string): Promise<BackupPaylo
     );
 
     return {
-      version: 2,
+      version: 3,
       exportedAt: new Date().toISOString(),
       places,
       reviews,
@@ -347,6 +452,7 @@ export async function exportFirestoreBackup(userId: string): Promise<BackupPaylo
 
 export async function importBackupToFirestore(
   userId: string,
+  authorName: string,
   jsonText: string
 ): Promise<number> {
   const parsed = JSON.parse(jsonText) as Partial<BackupPayload>;
@@ -354,7 +460,10 @@ export async function importBackupToFirestore(
     throw new Error('Geçersiz yedek dosyası formatı.');
   }
 
-  const reviewsByPlace = new Map<string, Array<{ rating: 1 | 2 | 3 | 4 | 5; comment: string; photos: string[] }>>();
+  const reviewsByPlace = new Map<
+    string,
+    Array<{ rating: 1 | 2 | 3 | 4 | 5; comment: string; photos: string[] }>
+  >();
   if (Array.isArray(parsed.reviews)) {
     for (const r of parsed.reviews) {
       if (r && typeof r.placeId === 'string' && typeof r.comment === 'string') {
@@ -390,7 +499,7 @@ export async function importBackupToFirestore(
               ? 2
               : 1);
 
-    await createPlaceWithInitialReview(userId, {
+    const placeId = await createPlaceWithInitialReview(userId, authorName, {
       name: p.name,
       category:
         p.category === 'restaurant' ||
@@ -404,6 +513,16 @@ export async function importBackupToFirestore(
       initialComment: comment.length >= 2 ? comment : 'Ziyaret notu',
       photos: firstRev?.photos || (p.coverImage ? [p.coverImage] : []),
     });
+
+    for (const extraRev of relatedReviews.slice(1)) {
+      await addReviewToPlace(userId, authorName, {
+        placeId,
+        rating: extraRev.rating,
+        comment: extraRev.comment.trim().length >= 2 ? extraRev.comment : 'Ziyaret notu',
+        photos: extraRev.photos,
+      });
+    }
+
     imported += 1;
   }
 

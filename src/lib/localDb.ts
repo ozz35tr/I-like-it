@@ -91,6 +91,10 @@ function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
   return {
     id: raw.id,
     ownerId: typeof raw.ownerId === 'string' && raw.ownerId ? raw.ownerId : LOCAL_OWNER_ID,
+    authorName:
+      typeof raw.authorName === 'string' && raw.authorName.trim()
+        ? raw.authorName.trim().slice(0, STORAGE_LIMITS.AUTHOR_NAME_MAX)
+        : 'Bu Cihaz',
     name: typeof raw.name === 'string' && raw.name ? raw.name : 'Mekan',
     category,
     mapsUrl: typeof raw.mapsUrl === 'string' ? raw.mapsUrl : '',
@@ -119,6 +123,10 @@ function normalizeReview(raw: Partial<ReviewItem> & { id: string; placeId: strin
   return {
     id: raw.id,
     ownerId: typeof raw.ownerId === 'string' && raw.ownerId ? raw.ownerId : LOCAL_OWNER_ID,
+    authorName:
+      typeof raw.authorName === 'string' && raw.authorName.trim()
+        ? raw.authorName.trim().slice(0, STORAGE_LIMITS.AUTHOR_NAME_MAX)
+        : 'Bu Cihaz',
     placeId: raw.placeId,
     rating,
     comment: typeof raw.comment === 'string' ? raw.comment : '',
@@ -225,6 +233,7 @@ export async function createLocalPlaceWithInitialReview(input: {
   const place: PlaceItem = {
     id: placeId,
     ownerId: LOCAL_OWNER_ID,
+    authorName: 'Bu Cihaz',
     name: cleanName,
     category: input.category,
     mapsUrl: cleanMapsUrl,
@@ -240,6 +249,7 @@ export async function createLocalPlaceWithInitialReview(input: {
   const review: ReviewItem = {
     id: reviewId,
     ownerId: LOCAL_OWNER_ID,
+    authorName: 'Bu Cihaz',
     placeId,
     rating: input.initialRating,
     comment: cleanComment,
@@ -308,6 +318,7 @@ export async function addLocalReviewToPlace(input: {
   const review: ReviewItem = {
     id: generateId(),
     ownerId: LOCAL_OWNER_ID,
+    authorName: 'Bu Cihaz',
     placeId: input.placeId,
     rating: input.rating,
     comment: cleanComment,

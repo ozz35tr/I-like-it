@@ -5,6 +5,7 @@ export type SortDirection = 'asc' | 'desc';
 export interface PlaceItem {
   id: string;
   ownerId: string;
+  authorName: string;
   name: string;
   category: PlaceCategory;
   mapsUrl: string;
@@ -20,6 +21,7 @@ export interface PlaceItem {
 export interface ReviewItem {
   id: string;
   ownerId: string;
+  authorName: string;
   placeId: string;
   rating: 1 | 2 | 3 | 4 | 5;
   comment: string;
@@ -36,6 +38,7 @@ export const CATEGORY_LABELS: Record<PlaceCategory, string> = {
 };
 
 export const STORAGE_LIMITS = {
+  AUTHOR_NAME_MAX: 60,
   NAME_MIN: 2,
   NAME_MAX: 100,
   MAPS_URL_MAX: 600,

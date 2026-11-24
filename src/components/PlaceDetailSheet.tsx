@@ -17,6 +17,7 @@ import {
   removePlace,
   subscribeUserOrLocalPlaceReviews,
   updateMapsUrl,
+  type CloudActor,
 } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
@@ -28,7 +29,7 @@ import { PhotoUploader } from './PhotoUploader';
 import { StarRatingDisplay, StarRatingInput } from './StarRating';
 
 interface PlaceDetailSheetProps {
-  userId?: string | null;
+  actor?: CloudActor | null;
   place: PlaceItem;
   onClose: () => void;
   onDeleted: () => void;
@@ -44,7 +45,7 @@ function formatDate(ts: number): string {
 }
 
 export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
-  userId,
+  actor,
   place,
   onClose,
   onDeleted,
@@ -72,7 +73,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   useEffect(() => {
     setLoadingReviews(true);
     const unsub = subscribeUserOrLocalPlaceReviews(
-      userId,
+      actor,
       place.id,
       (items) => {
         setReviews(items);
@@ -84,7 +85,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       }
     );
     return () => unsub();
-  }, [userId, place.id]);
+  }, [actor, place.id]);
 
   const allPhotos = [
     ...(place.coverImage ? [place.coverImage] : []),
@@ -101,7 +102,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
     setSubmitting(true);
     setError(null);
     try {
-      await addReview(userId, {
+      await addReview(actor, {
         placeId: place.id,
         rating,
         comment: trimmed,
@@ -122,7 +123,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
     e.preventDefault();
     const trimmed = linkDraft.trim();
     if (!trimmed) {
-      await updateMapsUrl(userId, place.id, '');
+      await updateMapsUrl(actor, place.id, '');
       setEditingLink(false);
       setLinkError(null);
       return;
@@ -132,15 +133,17 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       setLinkError('Geçerli bir Google Haritalar bağlantısı girin.');
       return;
     }
-    await updateMapsUrl(userId, place.id, url);
+    await updateMapsUrl(actor, place.id, url);
     setEditingLink(false);
     setLinkError(null);
   };
 
   const handleDeletePlace = async () => {
-    await removePlace(userId, place.id);
+    await removePlace(actor, place.id);
     onDeleted();
   };
+
+  const canManagePlace = !actor || place.ownerId === actor.uid;
 
   const hasSavedMapsUrl = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
   const fallbackSearchUrl = getPlaceExternalMapsUrl(place);
@@ -171,7 +174,9 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
 
           <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
             <div className="min-w-0">
-              <p className="text-xs text-slate-500">{CATEGORY_LABELS[place.category]}</p>
+              <p className="text-xs text-slate-500">
+                {CATEGORY_LABELS[place.category]} · Ekleyen: <span className="font-medium text-slate-700">{place.authorName}</span>
+              </p>
               <h2 id="detail-place-title" className="text-lg font-semibold text-slate-900 truncate">
                 {place.name}
               </h2>
@@ -261,16 +266,18 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                         </>
                       )}
                     </button>
-                    <button
-                      type="button"
-                      onClick={() => setEditingLink(true)}
-                      className="min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/60"
-                    >
-                      Değiştir
-                    </button>
+                    {canManagePlace && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingLink(true)}
+                        className="min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/60"
+                      >
+                        Değiştir
+                      </button>
+                    )}
                   </div>
                 </div>
-              ) : editingLink ? (
+              ) : editingLink && canManagePlace ? (
                 <form onSubmit={(e) => void handleSaveLink(e)} className="space-y-2">
                   <div className="flex gap-2">
                     <input
@@ -302,14 +309,16 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
               ) : (
                 <div className="rounded-xl bg-slate-50 border border-dashed border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
                   <span className="text-xs text-slate-500">Lokasyon linki eklenmemiş</span>
-                  <button
-                    type="button"
-                    onClick={() => setEditingLink(true)}
-                    className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
-                  >
-                    <Link2 className="w-3.5 h-3.5" />
-                    <span>Link Ekle</span>
-                  </button>
+                  {canManagePlace && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingLink(true)}
+                      className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                    >
+                      <Link2 className="w-3.5 h-3.5" />
+                      <span>Link Ekle</span>
+                    </button>
+                  )}
                 </div>
               )}
             </div>
@@ -384,26 +393,35 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                 <p className="text-sm text-slate-500 py-4 text-center">Henüz yorum yok.</p>
               ) : (
                 <div className="divide-y divide-slate-100">
-                  {reviews.map((rev) => (
+                  {reviews.map((rev) => {
+                    const isOwnReview = !actor || rev.ownerId === actor.uid;
+                    return (
                     <div key={rev.id} className="py-3 first:pt-0 space-y-2">
                       <div className="flex items-center justify-between gap-3">
-                        <div className="flex items-center gap-2">
+                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
                           <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-slate-900 tabular-nums">
                             <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
                             {rev.rating}.0
                           </span>
                           <span className="text-xs text-slate-400">·</span>
+                          <span className="text-xs font-semibold text-slate-800 truncate">
+                            {rev.authorName}
+                            {actor && rev.ownerId === actor.uid ? ' (Siz)' : ''}
+                          </span>
+                          <span className="text-xs text-slate-400">·</span>
                           <span className="text-xs text-slate-500">{formatDate(rev.createdAt)}</span>
                         </div>
 
-                        <button
-                          type="button"
-                          aria-label="Yorumu sil"
-                          onClick={() => void deleteReview(userId, place.id, rev.id)}
-                          className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                        >
-                          <Trash2 className="w-3.5 h-3.5" />
-                        </button>
+                        {isOwnReview && (
+                          <button
+                            type="button"
+                            aria-label="Yorumu sil"
+                            onClick={() => void deleteReview(actor, place.id, rev.id)}
+                            className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 shrink-0"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
                       </div>
 
                       <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
@@ -430,21 +448,24 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                         </div>
                       )}
                     </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </div>
 
-            <div className="pt-2 pb-safe border-t border-slate-100 flex justify-end">
-              <button
-                type="button"
-                onClick={() => void handleDeletePlace()}
-                className="min-h-[44px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-rose-600 hover:bg-rose-50 transition-colors"
-              >
-                <Trash2 className="w-3.5 h-3.5" />
-                <span>Mekanı Listeden Sil</span>
-              </button>
-            </div>
+            {canManagePlace && (
+              <div className="pt-2 pb-safe border-t border-slate-100 flex justify-end">
+                <button
+                  type="button"
+                  onClick={() => void handleDeletePlace()}
+                  className="min-h-[44px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-medium text-rose-600 hover:bg-rose-50 transition-colors"
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                  <span>Mekanı Listeden Sil</span>
+                </button>
+              </div>
+            )}
           </div>
         </div>
       </div>

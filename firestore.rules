@@ -22,15 +22,19 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isVerifiedOwner(userId) {
-      return isSignedIn() &&
-        request.auth.token.email_verified == true &&
-        request.auth.uid == userId;
+    function isVerifiedSignedIn() {
+      return isSignedIn() && request.auth.token.email_verified == true;
     }
 
-    function isValidPlace(data) {
+    function isVerifiedOwner(userId) {
+      return isVerifiedSignedIn() && request.auth.uid == userId;
+    }
+
+    function isValidSharedPlace(data) {
       return data.keys().hasAll([
           'ownerId',
+          'authorName',
+          'visibility',
           'name',
           'category',
           'mapsUrl',
@@ -44,6 +48,8 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'ownerId',
+          'authorName',
+          'visibility',
           'name',
           'category',
           'mapsUrl',
@@ -57,7 +63,10 @@ service cloud.firestore {
         ]) &&
         data.ownerId is string &&
         isValidId(data.ownerId) &&
-        data.ownerId == request.auth.uid &&
+        data.authorName is string &&
+        data.authorName.size() >= 1 &&
+        data.authorName.size() <= 60 &&
+        data.visibility == 'shared' &&
         data.name is string &&
         data.name.size() >= 2 &&
         data.name.size() <= 100 &&
@@ -81,9 +90,11 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    function isValidReview(data, placeId) {
+    function isValidSharedReview(data, placeId) {
       return data.keys().hasAll([
           'ownerId',
+          'authorName',
+          'visibility',
           'placeId',
           'rating',
           'comment',
@@ -93,6 +104,8 @@ service cloud.firestore {
         ]) &&
         data.keys().hasOnly([
           'ownerId',
+          'authorName',
+          'visibility',
           'placeId',
           'rating',
           'comment',
@@ -103,6 +116,10 @@ service cloud.firestore {
         data.ownerId is string &&
         isValidId(data.ownerId) &&
         data.ownerId == request.auth.uid &&
+        data.authorName is string &&
+        data.authorName.size() >= 1 &&
+        data.authorName.size() <= 60 &&
+        data.visibility == 'shared' &&
         data.placeId is string &&
         isValidId(data.placeId) &&
         data.placeId == placeId &&
@@ -120,6 +137,75 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
+    // Shared Collaborative Places & Reviews
+    match /places/{placeId} {
+      allow get: if isValidId(placeId) &&
+        isVerifiedSignedIn() &&
+        existing().visibility == 'shared';
+
+      allow list: if isVerifiedSignedIn() &&
+        resource.data.visibility == 'shared';
+
+      allow create: if isValidId(placeId) &&
+        isVerifiedSignedIn() &&
+        isValidSharedPlace(incoming()) &&
+        incoming().ownerId == request.auth.uid &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(placeId) &&
+        isVerifiedSignedIn() &&
+        isValidSharedPlace(incoming()) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().authorName == existing().authorName &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        (
+          (
+            existing().ownerId == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly(['mapsUrl', 'updatedAt'])
+          ) ||
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'avgRating',
+            'reviewCount',
+            'ratingSum',
+            'latestComment',
+            'coverImage',
+            'updatedAt'
+          ])
+        );
+
+      allow delete: if isValidId(placeId) &&
+        isVerifiedSignedIn() &&
+        existing().ownerId == request.auth.uid;
+
+      match /reviews/{reviewId} {
+        allow get: if isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedSignedIn() &&
+          existing().visibility == 'shared';
+
+        allow list: if isVerifiedSignedIn() &&
+          resource.data.visibility == 'shared';
+
+        allow create: if isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedSignedIn() &&
+          isValidSharedReview(incoming(), placeId) &&
+          incoming().createdAt == request.time &&
+          incoming().updatedAt == request.time &&
+          getAfter(/databases/$(database)/documents/places/$(placeId)).data.visibility == 'shared';
+
+        allow update: if false;
+
+        allow delete: if isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedSignedIn() &&
+          existing().ownerId == request.auth.uid;
+      }
+    }
+
+    // Legacy Per-User Private Places (retained for one-click migration to shared list)
     match /users/{userId}/places/{placeId} {
       allow get: if isValidId(userId) &&
         isValidId(placeId) &&
@@ -130,31 +216,8 @@ service cloud.firestore {
         isVerifiedOwner(userId) &&
         resource.data.ownerId == request.auth.uid;
 
-      allow create: if isValidId(userId) &&
-        isValidId(placeId) &&
-        isVerifiedOwner(userId) &&
-        isValidPlace(incoming()) &&
-        incoming().createdAt == request.time &&
-        incoming().updatedAt == request.time;
-
-      allow update: if isValidId(userId) &&
-        isValidId(placeId) &&
-        isVerifiedOwner(userId) &&
-        isValidPlace(incoming()) &&
-        incoming().ownerId == existing().ownerId &&
-        incoming().createdAt == existing().createdAt &&
-        incoming().updatedAt == request.time &&
-        (
-          incoming().diff(existing()).affectedKeys().hasOnly(['mapsUrl', 'updatedAt']) ||
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'avgRating',
-            'reviewCount',
-            'ratingSum',
-            'latestComment',
-            'coverImage',
-            'updatedAt'
-          ])
-        );
+      allow create: if false;
+      allow update: if false;
 
       allow delete: if isValidId(userId) &&
         isValidId(placeId) &&
@@ -169,19 +232,10 @@ service cloud.firestore {
           existing().ownerId == request.auth.uid;
 
         allow list: if isValidId(userId) &&
-          isValidId(placeId) &&
           isVerifiedOwner(userId) &&
           resource.data.ownerId == request.auth.uid;
 
-        allow create: if isValidId(userId) &&
-          isValidId(placeId) &&
-          isValidId(reviewId) &&
-          isVerifiedOwner(userId) &&
-          isValidReview(incoming(), placeId) &&
-          incoming().createdAt == request.time &&
-          incoming().updatedAt == request.time &&
-          getAfter(/databases/$(database)/documents/users/$(userId)/places/$(placeId)).data.ownerId == request.auth.uid;
-
+        allow create: if false;
         allow update: if false;
 
         allow delete: if isValidId(userId) &&

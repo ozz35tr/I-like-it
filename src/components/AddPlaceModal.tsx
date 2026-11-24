@@ -8,7 +8,7 @@ import {
   X,
 } from 'lucide-react';
 import { extractSharedMapsInput, resolveGoogleMapsLink } from '../lib/mapsLink';
-import { createPlace } from '../lib/placeRepository';
+import { createPlace, type CloudActor } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
   STORAGE_LIMITS,
@@ -18,13 +18,13 @@ import { PhotoUploader } from './PhotoUploader';
 import { StarRatingInput } from './StarRating';
 
 interface AddPlaceModalProps {
-  userId?: string | null;
+  actor?: CloudActor | null;
   onClose: () => void;
   onCreated: (placeId: string) => void;
 }
 
 export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
-  userId,
+  actor,
   onClose,
   onCreated,
 }) => {
@@ -132,7 +132,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     setError(null);
 
     try {
-      const placeId = await createPlace(userId, {
+      const placeId = await createPlace(actor, {
         name: trimmedName,
         category,
         mapsUrl: finalUrl,

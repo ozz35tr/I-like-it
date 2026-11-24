@@ -2,15 +2,26 @@
   "entities": {
     "Place": {
       "title": "Place",
-      "description": "A visited restaurant, cafe, bakery, or bistro saved by the authenticated user with optional Google Maps share link and aggregated rating.",
+      "description": "A visited restaurant, cafe, bakery, or bistro shared across signed-in users with author attribution, optional Google Maps share link, and aggregated star rating.",
       "type": "object",
       "properties": {
         "ownerId": {
           "type": "string",
-          "description": "Firebase Auth UID of the owner.",
+          "description": "Firebase Auth UID of the user who created the place.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Display name of the creator (non-PII).",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Shared visibility marker.",
+          "enum": ["shared"]
         },
         "name": {
           "type": "string",
@@ -66,6 +77,8 @@
       },
       "required": [
         "ownerId",
+        "authorName",
+        "visibility",
         "name",
         "category",
         "mapsUrl",
@@ -80,7 +93,7 @@
     },
     "Review": {
       "title": "Review",
-      "description": "A rating, comment, and optional compressed photos for a saved place.",
+      "description": "A rating, comment, author attribution, and optional compressed photos for a shared place.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -89,6 +102,17 @@
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "authorName": {
+          "type": "string",
+          "description": "Display name of the review author (non-PII).",
+          "minLength": 1,
+          "maxLength": 60
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Shared visibility marker.",
+          "enum": ["shared"]
         },
         "placeId": {
           "type": "string",
@@ -124,6 +148,8 @@
       },
       "required": [
         "ownerId",
+        "authorName",
+        "visibility",
         "placeId",
         "rating",
         "comment",
@@ -134,13 +160,21 @@
     }
   },
   "firestore": {
+    "/places/{placeId}": {
+      "schema": { "$ref": "#/entities/Place" },
+      "description": "Shared community list of visited places visible to all verified signed-in users."
+    },
+    "/places/{placeId}/reviews/{reviewId}": {
+      "schema": { "$ref": "#/entities/Review" },
+      "description": "Reviews, ratings, author names, and optional compressed photos on a shared place."
+    },
     "/users/{userId}/places/{placeId}": {
       "schema": { "$ref": "#/entities/Place" },
-      "description": "Per-user private list of visited places synced across devices."
+      "description": "Legacy per-user private places collection retained for one-click migration to the shared list."
     },
     "/users/{userId}/places/{placeId}/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/Review" },
-      "description": "Reviews and optional compressed photos belonging to a user's saved place."
+      "description": "Legacy per-user private reviews retained for one-click migration to the shared list."
     }
   }
 }

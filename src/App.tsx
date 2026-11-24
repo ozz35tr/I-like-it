@@ -16,13 +16,13 @@ import {
   ExternalLink,
   Image as ImageIcon,
   Loader2,
-  LogIn,
   LogOut,
   Plus,
   Search,
   Star,
   Trash2,
   Upload,
+  Users,
 } from 'lucide-react';
 import { AddPlaceModal } from './components/AddPlaceModal';
 import { OfflineIndicator } from './components/OfflineIndicator';
@@ -39,8 +39,14 @@ import {
   importBackup,
   removePlace,
   subscribeUserOrLocalPlaces,
+  type CloudActor,
 } from './lib/placeRepository';
-import { importBackupToFirestore } from './lib/placesService';
+import {
+  countLegacyPersonalCloudPlaces,
+  importBackupToFirestore,
+  migrateLegacyPersonalCloudToShared,
+  resolveSafeAuthorName,
+} from './lib/placesService';
 import {
   CATEGORY_LABELS,
   type PlaceItem,
@@ -87,8 +93,20 @@ export default function App() {
   const [showAddModal, setShowAddModal] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [localLegacyCount, setLocalLegacyCount] = useState(0);
-  const [migratingLocal, setMigratingLocal] = useState(false);
+  const [legacyCloudCount, setLegacyCloudCount] = useState(0);
+  const [migratingLegacy, setMigratingLegacy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+
+  const actor: CloudActor | null = useMemo(
+    () =>
+      authReady && user
+        ? {
+            uid: user.uid,
+            authorName: resolveSafeAuthorName(user.displayName, user.email),
+          }
+        : null,
+    [authReady, user]
+  );
 
   useEffect(() => {
     void getRedirectResult(auth).catch((err) => {
@@ -108,9 +126,8 @@ export default function App() {
     setLoadingPlaces(true);
     setSyncError(null);
 
-    const activeUid = authReady && user ? user.uid : null;
     const unsub = subscribeUserOrLocalPlaces(
-      activeUid,
+      actor,
       (places) => {
         setAllPlaces(places);
         setLoadingPlaces(false);
@@ -127,7 +144,7 @@ export default function App() {
       }
     );
 
-    if (activeUid) {
+    if (actor) {
       void listLocalIndexedDbPlaces()
         .then((localItems) => {
           setLocalLegacyCount(localItems.length);
@@ -135,12 +152,21 @@ export default function App() {
         .catch(() => {
           setLocalLegacyCount(0);
         });
+
+      void countLegacyPersonalCloudPlaces(actor.uid)
+        .then((count) => {
+          setLegacyCloudCount(count);
+        })
+        .catch(() => {
+          setLegacyCloudCount(0);
+        });
     } else {
       setLocalLegacyCount(0);
+      setLegacyCloudCount(0);
     }
 
     return () => unsub();
-  }, [authReady, user]);
+  }, [actor]);
 
   const liveDetailPlace = useMemo(() => {
     if (!detailPlace) return null;
@@ -187,20 +213,39 @@ export default function App() {
     setDetailPlace(null);
   };
 
-  const handleMigrateLocalToCloud = async () => {
-    if (!user) return;
-    setMigratingLocal(true);
+  const handleMigrateToShared = async () => {
+    if (!actor) return;
+    setMigratingLegacy(true);
     try {
-      const localPayload = await exportLocalBackup();
-      const imported = await importBackupToFirestore(user.uid, JSON.stringify(localPayload));
-      await clearLegacyLocalDatabase();
-      setLocalLegacyCount(0);
-      setNotice(`${imported} yerel kayıt bulut hesabınıza aktarıldı.`);
+      let totalMoved = 0;
+
+      if (localLegacyCount > 0) {
+        const localPayload = await exportLocalBackup();
+        const importedLocal = await importBackupToFirestore(
+          actor.uid,
+          actor.authorName,
+          JSON.stringify(localPayload)
+        );
+        await clearLegacyLocalDatabase();
+        setLocalLegacyCount(0);
+        totalMoved += importedLocal;
+      }
+
+      if (legacyCloudCount > 0) {
+        const migratedCloud = await migrateLegacyPersonalCloudToShared(
+          actor.uid,
+          actor.authorName
+        );
+        setLegacyCloudCount(0);
+        totalMoved += migratedCloud;
+      }
+
+      setNotice(`${totalMoved} kayıt ortak listeye aktarıldı.`);
       window.setTimeout(() => setNotice(null), 3500);
     } catch (err) {
-      setNotice(err instanceof Error ? err.message : 'Yerel kayıtlar aktarılamadı.');
+      setNotice(err instanceof Error ? err.message : 'Eski kayıtlar aktarılamadı.');
     } finally {
-      setMigratingLocal(false);
+      setMigratingLegacy(false);
     }
   };
 
@@ -231,6 +276,7 @@ export default function App() {
           (p) =>
             p.name.toLowerCase().includes(q) ||
             (p.latestComment || '').toLowerCase().includes(q) ||
+            (p.authorName || '').toLowerCase().includes(q) ||
             CATEGORY_LABELS[p.category].toLowerCase().includes(q)
         )
       : allPlaces;
@@ -254,7 +300,7 @@ export default function App() {
   }, [allPlaces, searchText, sortField, sortDir]);
 
   const handleExport = async () => {
-    const payload = await exportBackup(user?.uid);
+    const payload = await exportBackup(actor);
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
@@ -271,7 +317,7 @@ export default function App() {
     if (!file) return;
     try {
       const text = await file.text();
-      const count = await importBackup(user?.uid, text);
+      const count = await importBackup(actor, text);
       setNotice(`${count} mekan listenize eklendi.`);
     } catch (err) {
       setNotice(err instanceof Error ? err.message : 'Yedek okunamadı.');
@@ -352,15 +398,15 @@ export default function App() {
                 type="button"
                 onClick={() => void handleSignIn()}
                 disabled={signingIn}
-                title="İsteğe bağlı: Cihazlar arası eşitleme için Google ile bağlan"
+                title="Ortak listeye katılmak ve yorumları görmek için Google ile bağlan"
                 className="min-h-[40px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 text-xs font-medium whitespace-nowrap shrink-0 disabled:opacity-50"
               >
                 {signingIn ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-700" />
                 ) : (
-                  <LogIn className="w-3.5 h-3.5 text-emerald-700" />
+                  <Users className="w-3.5 h-3.5 text-emerald-700" />
                 )}
-                <span className="hidden sm:inline">Bulut Eşitle</span>
+                <span className="hidden sm:inline">Ortak Liste</span>
               </button>
             )}
           </div>
@@ -386,30 +432,33 @@ export default function App() {
           </div>
         )}
 
-        {localLegacyCount > 0 && (
+        {localLegacyCount + legacyCloudCount > 0 && (
           <div className="rounded-xl bg-amber-50 border border-amber-200 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
             <p className="text-xs text-amber-950">
-              Bu cihazda daha önce yerel olarak kaydedilmiş{' '}
-              <span className="font-mono font-semibold">{localLegacyCount}</span> mekan bulundu.
-              Mobilde de görmek için buluta aktarabilirsiniz.
+              Daha önce kişisel olarak kaydedilmiş{' '}
+              <span className="font-mono font-semibold">{localLegacyCount + legacyCloudCount}</span>{' '}
+              mekan bulundu. Herkesle ortak listeye taşıyabilirsiniz.
             </p>
             <div className="flex items-center gap-2 shrink-0">
               <button
                 type="button"
-                onClick={() => void handleMigrateLocalToCloud()}
-                disabled={migratingLocal}
+                onClick={() => void handleMigrateToShared()}
+                disabled={migratingLegacy}
                 className="min-h-[36px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-amber-700 text-white text-xs font-semibold hover:bg-amber-800 disabled:opacity-50"
               >
-                {migratingLocal ? (
+                {migratingLegacy ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 ) : (
                   <CloudUpload className="w-3.5 h-3.5" />
                 )}
-                <span>Buluta Aktar</span>
+                <span>Ortak Listeye Aktar</span>
               </button>
               <button
                 type="button"
-                onClick={() => setLocalLegacyCount(0)}
+                onClick={() => {
+                  setLocalLegacyCount(0);
+                  setLegacyCloudCount(0);
+                }}
                 className="min-h-[36px] px-2.5 py-1.5 rounded-lg text-xs font-medium text-amber-900 hover:bg-amber-100"
               >
                 Gizle
@@ -426,7 +475,7 @@ export default function App() {
               type="search"
               value={searchText}
               onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Restoran adı veya yorumlarda ara..."
+              placeholder="Mekan, yorum veya ekleyen kişide ara..."
               className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
             />
           </div>
@@ -436,7 +485,7 @@ export default function App() {
             <span className="font-mono font-semibold text-slate-900">
               {sortedAndFilteredPlaces.length}
             </span>{' '}
-            mekan · {user ? 'Bulut senkronize' : 'Bu cihazda kayıtlı'}
+            mekan · {actor ? 'Ortak liste · Bulut senkronize' : 'Bu cihazda kayıtlı'}
           </p>
         </div>
 
@@ -454,7 +503,7 @@ export default function App() {
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {allPlaces.length === 0
-                ? 'Giriş veya izin gerekmeden hemen mekan ekleyebilirsiniz. İsterseniz üstteki Bulut Eşitle seçeneğiyle cihazlar arası da eşitleyebilirsiniz.'
+                ? 'Giriş veya izin gerekmeden hemen mekan ekleyebilirsiniz. Paylaşılan ortak listeye katılmak ve diğer kişilerin yorumlarını görmek için üstteki Ortak Liste seçeneğiyle Google hesabınıza bağlanabilirsiniz.'
                 : 'Farklı bir kelime deneyebilir veya arama kutusunu temizleyebilirsiniz.'}
             </p>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
@@ -540,6 +589,7 @@ export default function App() {
                   <tbody className="divide-y divide-slate-100 text-sm">
                     {sortedAndFilteredPlaces.map((place) => {
                       const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
+                      const canDeletePlace = !actor || place.ownerId === actor.uid;
                       return (
                         <tr
                           key={place.id}
@@ -567,6 +617,12 @@ export default function App() {
                                   <p className="text-xs text-slate-500">
                                     {CATEGORY_LABELS[place.category]}
                                   </p>
+                                  {actor && (
+                                    <p className="text-[11px] text-slate-400 truncate max-w-[190px]">
+                                      Ekleyen: {place.authorName}
+                                      {place.ownerId === actor.uid ? ' (Siz)' : ''}
+                                    </p>
+                                  )}
                                 </div>
                               </div>
                             </button>
@@ -627,14 +683,16 @@ export default function App() {
                                   month: '2-digit',
                                 })}
                               </span>
-                              <button
-                                type="button"
-                                onClick={() => void removePlace(user?.uid, place.id)}
-                                aria-label={`${place.name} kaydını sil`}
-                                className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
+                              {canDeletePlace && (
+                                <button
+                                  type="button"
+                                  onClick={() => void removePlace(actor, place.id)}
+                                  aria-label={`${place.name} kaydını sil`}
+                                  className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
                             </div>
                           </td>
                         </tr>
@@ -686,6 +744,7 @@ export default function App() {
               <div className="rounded-2xl bg-white border border-slate-200 divide-y divide-slate-100 overflow-hidden">
                 {sortedAndFilteredPlaces.map((place) => {
                   const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
+                  const canDeletePlace = !actor || place.ownerId === actor.uid;
                   return (
                     <div key={place.id} className="p-3.5 space-y-2">
                       <div className="flex items-start justify-between gap-3">
@@ -706,8 +765,13 @@ export default function App() {
                             <p className="text-sm font-semibold text-slate-900 truncate">
                               {place.name}
                             </p>
-                            <p className="text-[11px] text-slate-500">
+                            <p className="text-[11px] text-slate-500 truncate">
                               {CATEGORY_LABELS[place.category]}
+                              {actor
+                                ? ` · Ekleyen: ${place.authorName}${
+                                    place.ownerId === actor.uid ? ' (Siz)' : ''
+                                  }`
+                                : ''}
                             </p>
                           </div>
                         </button>
@@ -754,14 +818,16 @@ export default function App() {
                           >
                             Yorumlar ({place.reviewCount})
                           </button>
-                          <button
-                            type="button"
-                            onClick={() => void removePlace(user?.uid, place.id)}
-                            aria-label={`${place.name} kaydını sil`}
-                            className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                          {canDeletePlace && (
+                            <button
+                              type="button"
+                              onClick={() => void removePlace(actor, place.id)}
+                              aria-label={`${place.name} kaydını sil`}
+                              className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -775,7 +841,7 @@ export default function App() {
 
       {showAddModal && (
         <AddPlaceModal
-          userId={user?.uid}
+          actor={actor}
           onClose={() => setShowAddModal(false)}
           onCreated={() => {
             setShowAddModal(false);
@@ -785,7 +851,7 @@ export default function App() {
 
       {liveDetailPlace && (
         <PlaceDetailSheet
-          userId={user?.uid}
+          actor={actor}
           place={liveDetailPlace}
           onClose={() => setDetailPlace(null)}
           onDeleted={() => setDetailPlace(null)}
