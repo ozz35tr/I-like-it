@@ -52,6 +52,8 @@ service cloud.firestore {
           'visibility',
           'name',
           'category',
+          'visitStatus',
+          'cuisineType',
           'mapsUrl',
           'coverImage',
           'latestComment',
@@ -71,6 +73,8 @@ service cloud.firestore {
         data.name.size() >= 2 &&
         data.name.size() <= 100 &&
         data.category in ['restaurant', 'cafe', 'bakery', 'bistro'] &&
+        (!('visitStatus' in data) || data.visitStatus in ['visited', 'wishlist']) &&
+        (!('cuisineType' in data) || (data.cuisineType is string && data.cuisineType.size() <= 40)) &&
         data.mapsUrl is string &&
         data.mapsUrl.size() <= 600 &&
         data.coverImage is string &&
@@ -163,16 +167,25 @@ service cloud.firestore {
         (
           (
             existing().ownerId == request.auth.uid &&
-            incoming().diff(existing()).affectedKeys().hasOnly(['mapsUrl', 'updatedAt'])
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'mapsUrl',
+              'cuisineType',
+              'visitStatus',
+              'updatedAt'
+            ])
           ) ||
-          incoming().diff(existing()).affectedKeys().hasOnly([
-            'avgRating',
-            'reviewCount',
-            'ratingSum',
-            'latestComment',
-            'coverImage',
-            'updatedAt'
-          ])
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'avgRating',
+              'reviewCount',
+              'ratingSum',
+              'latestComment',
+              'coverImage',
+              'visitStatus',
+              'updatedAt'
+            ]) &&
+            (!('visitStatus' in incoming()) || incoming().visitStatus == 'visited' || incoming().reviewCount == 0)
+          )
         );
 
       allow delete: if isValidId(placeId) &&

@@ -3,12 +3,15 @@ import {
   type PlaceCategory,
   type PlaceItem,
   type ReviewItem,
+  type VisitStatus,
 } from '../types/place';
 
 export interface LegacyLocalPlace {
   id: string;
   name: string;
   category?: string;
+  visitStatus?: VisitStatus;
+  cuisineType?: string;
   mapsUrl?: string;
   coverImage?: string;
   latestComment?: string;
@@ -140,6 +143,8 @@ function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
       ? raw.category
       : 'restaurant';
 
+  const visitStatus: VisitStatus = raw.visitStatus === 'wishlist' ? 'wishlist' : 'visited';
+
   return {
     id: raw.id,
     ownerId: typeof raw.ownerId === 'string' && raw.ownerId ? raw.ownerId : LOCAL_OWNER_ID,
@@ -149,11 +154,21 @@ function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
         : 'Bu Cihaz',
     name: typeof raw.name === 'string' && raw.name ? raw.name : 'Mekan',
     category,
+    visitStatus,
+    cuisineType:
+      typeof raw.cuisineType === 'string'
+        ? raw.cuisineType.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX)
+        : '',
     mapsUrl: typeof raw.mapsUrl === 'string' ? raw.mapsUrl : '',
     coverImage: typeof raw.coverImage === 'string' ? raw.coverImage : '',
     latestComment: typeof raw.latestComment === 'string' ? raw.latestComment : '',
     avgRating: typeof raw.avgRating === 'number' && Number.isFinite(raw.avgRating) ? raw.avgRating : 0,
-    reviewCount: typeof raw.reviewCount === 'number' && Number.isFinite(raw.reviewCount) ? raw.reviewCount : 1,
+    reviewCount:
+      typeof raw.reviewCount === 'number' && Number.isFinite(raw.reviewCount)
+        ? raw.reviewCount
+        : visitStatus === 'wishlist'
+          ? 0
+          : 1,
     ratingSum:
       typeof raw.ratingSum === 'number' && Number.isFinite(raw.ratingSum)
         ? raw.ratingSum
@@ -276,21 +291,62 @@ export function subscribeLocalPlaceReviews(
 export async function createLocalPlaceWithInitialReview(input: {
   name: string;
   category: PlaceCategory;
+  visitStatus?: VisitStatus;
+  cuisineType?: string;
   mapsUrl?: string;
-  initialRating: 1 | 2 | 3 | 4 | 5;
-  initialComment: string;
+  initialRating?: 1 | 2 | 3 | 4 | 5;
+  initialComment?: string;
   photos: string[];
 }): Promise<string> {
   const placeId = generateId();
-  const reviewId = generateId();
   const now = Date.now();
+  const visitStatus: VisitStatus = input.visitStatus === 'wishlist' ? 'wishlist' : 'visited';
 
   const cleanName = input.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX);
+  const cleanCuisine = (input.cuisineType || '').trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
   const cleanMapsUrl = (input.mapsUrl || '').trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
-  const cleanComment = input.initialComment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
+  const cleanComment = (input.initialComment || '').trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
   const cleanPhotos = input.photos
     .filter((p) => typeof p === 'string' && p.length <= 160000)
     .slice(0, STORAGE_LIMITS.MAX_PHOTOS);
+
+  if (visitStatus === 'wishlist') {
+    const place: PlaceItem = {
+      id: placeId,
+      ownerId: LOCAL_OWNER_ID,
+      authorName: 'Bu Cihaz',
+      name: cleanName,
+      category: input.category,
+      visitStatus: 'wishlist',
+      cuisineType: cleanCuisine,
+      mapsUrl: cleanMapsUrl,
+      coverImage: cleanPhotos[0] || '',
+      latestComment: cleanComment,
+      avgRating: 0,
+      reviewCount: 0,
+      ratingSum: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    try {
+      const db = await openDb();
+      const tx = db.transaction(STORE_PLACES, 'readwrite');
+      tx.objectStore(STORE_PLACES).put(place);
+      await txDone(tx);
+    } catch {
+      const data = readFallbackStore();
+      data.places.unshift(place);
+      writeFallbackStore(data);
+    }
+
+    notifyLocalChange();
+    return placeId;
+  }
+
+  const reviewId = generateId();
+  const rating: 1 | 2 | 3 | 4 | 5 = input.initialRating || 5;
+  const finalComment = cleanComment.length >= STORAGE_LIMITS.COMMENT_MIN ? cleanComment : 'Ziyaret notu';
 
   const place: PlaceItem = {
     id: placeId,
@@ -298,12 +354,14 @@ export async function createLocalPlaceWithInitialReview(input: {
     authorName: 'Bu Cihaz',
     name: cleanName,
     category: input.category,
+    visitStatus: 'visited',
+    cuisineType: cleanCuisine,
     mapsUrl: cleanMapsUrl,
     coverImage: cleanPhotos[0] || '',
-    latestComment: cleanComment,
-    avgRating: input.initialRating,
+    latestComment: finalComment,
+    avgRating: rating,
     reviewCount: 1,
-    ratingSum: input.initialRating,
+    ratingSum: rating,
     createdAt: now,
     updatedAt: now,
   };
@@ -313,8 +371,8 @@ export async function createLocalPlaceWithInitialReview(input: {
     ownerId: LOCAL_OWNER_ID,
     authorName: 'Bu Cihaz',
     placeId,
-    rating: input.initialRating,
-    comment: cleanComment,
+    rating,
+    comment: finalComment,
     photos: cleanPhotos,
     createdAt: now,
     updatedAt: now,
@@ -375,6 +433,47 @@ export async function updateLocalPlaceMapsUrl(placeId: string, mapsUrl: string):
   notifyLocalChange();
 }
 
+export async function updateLocalPlaceCuisineType(
+  placeId: string,
+  cuisineType: string
+): Promise<void> {
+  const cleanCuisine = cuisineType.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
+  const now = Date.now();
+
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_PLACES, 'readwrite');
+      const store = tx.objectStore(STORE_PLACES);
+      const getReq = store.get(placeId);
+      getReq.onsuccess = () => {
+        const existing = getReq.result as (Partial<PlaceItem> & { id: string }) | undefined;
+        if (!existing) {
+          reject(new Error('Mekan bulunamadı.'));
+          return;
+        }
+        const updated = normalizePlace(existing);
+        updated.cuisineType = cleanCuisine;
+        updated.updatedAt = now;
+        store.put(updated);
+      };
+      getReq.onerror = () => reject(getReq.error || new Error('Mekan güncellenemedi.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Mekan bulunamadı.') throw err;
+    const data = readFallbackStore();
+    const idx = data.places.findIndex((p) => p.id === placeId);
+    if (idx === -1) throw new Error('Mekan bulunamadı.');
+    data.places[idx] = { ...normalizePlace(data.places[idx]), cuisineType: cleanCuisine, updatedAt: now };
+    writeFallbackStore(data);
+  }
+
+  notifyLocalChange();
+}
+
 export async function addLocalReviewToPlace(input: {
   placeId: string;
   rating: 1 | 2 | 3 | 4 | 5;
@@ -421,6 +520,7 @@ export async function addLocalReviewToPlace(input: {
         place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
         place.latestComment = cleanComment;
         place.coverImage = place.coverImage || cleanPhotos[0] || '';
+        place.visitStatus = 'visited';
         place.updatedAt = now;
 
         placeStore.put(place);
@@ -444,6 +544,7 @@ export async function addLocalReviewToPlace(input: {
     place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
     place.latestComment = cleanComment;
     place.coverImage = place.coverImage || cleanPhotos[0] || '';
+    place.visitStatus = 'visited';
     place.updatedAt = now;
     data.places[idx] = place;
     data.reviews.unshift(review);
@@ -564,7 +665,7 @@ export async function exportDatabaseBackup(): Promise<{
     ]);
 
     return {
-      version: 2,
+      version: 4,
       exportedAt: new Date().toISOString(),
       places,
       reviews,
@@ -572,7 +673,7 @@ export async function exportDatabaseBackup(): Promise<{
   } catch {
     const data = readFallbackStore();
     return {
-      version: 2,
+      version: 4,
       exportedAt: new Date().toISOString(),
       places: data.places,
       reviews: data.reviews,
@@ -616,7 +717,8 @@ export async function importBackupToLocal(jsonText: string): Promise<number> {
     if (!p || typeof p.name !== 'string' || p.name.trim().length < 2) continue;
     const relatedReviews = p.id ? reviewsByPlace.get(p.id) || [] : [];
     const firstRev = relatedReviews[0];
-    const comment = (firstRev?.comment || p.latestComment || 'Ziyaret notu').trim();
+    const isWishlist = p.visitStatus === 'wishlist' && relatedReviews.length === 0;
+    const comment = (firstRev?.comment || p.latestComment || (isWishlist ? '' : 'Ziyaret notu')).trim();
     const avg = typeof p.avgRating === 'number' ? p.avgRating : 5;
     const rating: 1 | 2 | 3 | 4 | 5 =
       firstRev?.rating ||
@@ -631,9 +733,11 @@ export async function importBackupToLocal(jsonText: string): Promise<number> {
         p.category === 'bistro'
           ? p.category
           : 'restaurant',
+      visitStatus: isWishlist ? 'wishlist' : 'visited',
+      cuisineType: typeof p.cuisineType === 'string' ? p.cuisineType : '',
       mapsUrl: typeof p.mapsUrl === 'string' ? p.mapsUrl : '',
       initialRating: rating,
-      initialComment: comment.length >= 2 ? comment : 'Ziyaret notu',
+      initialComment: isWishlist ? comment : comment.length >= 2 ? comment : 'Ziyaret notu',
       photos: firstRev?.photos || (p.coverImage ? [p.coverImage] : []),
     });
     imported += 1;

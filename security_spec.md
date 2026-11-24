@@ -5,8 +5,9 @@
 2. **Non-PII Author Attribution:** Every shared `Place` and `Review` records `authorName` (`1..60` chars, display name) without storing raw email addresses or phone numbers.
 3. **Identity Integrity & Tiered Ownership:**
    - `ownerId` must equal `request.auth.uid` on create and is immutable on update.
-   - Only the creator (`existing().ownerId == request.auth.uid`) may delete a `Place`, edit its `mapsUrl`, or delete their own `Review`.
-   - Any verified signed-in user may contribute a `Review` to an existing shared `Place` and atomically update only the aggregate fields (`avgRating`, `reviewCount`, `ratingSum`, `latestComment`, `coverImage`, `updatedAt`).
+   - Only the creator (`existing().ownerId == request.auth.uid`) may delete a `Place`, edit its `mapsUrl`, or edit its `cuisineType`.
+   - Any verified signed-in user may contribute a `Review` to an existing shared `Place` and atomically update only the aggregate fields (`avgRating`, `reviewCount`, `ratingSum`, `latestComment`, `coverImage`, `visitStatus`, `updatedAt`).
+   - `visitStatus` must be `'visited'` or `'wishlist'`; `cuisineType` is bounded to `0..40` characters.
 4. **Master Gate & Atomicity:** A `Review` under `/places/{placeId}/reviews/{reviewId}` requires a valid shared parent `Place` verified via `getAfter(...)`.
 5. **Query Enforcement:** All shared `allow list` rules explicitly enforce `resource.data.visibility == 'shared'`.
 6. **Temporal Integrity & Strict Schema:** `createdAt` and `updatedAt` are bound to `request.time`; `hasAll` + `hasOnly` reject ghost fields; all IDs match `^[a-zA-Z0-9_\-]+$` (`1..128`).

@@ -1,33 +1,41 @@
 import React, { useEffect, useState } from 'react';
 import {
+  BookmarkPlus,
   CheckCircle2,
   ClipboardPaste,
   ExternalLink,
   Link2,
   Loader2,
+  UtensilsCrossed,
   X,
 } from 'lucide-react';
+import { formatFriendlyFirestoreError } from '../lib/firebase';
 import { extractSharedMapsInput, resolveGoogleMapsLink } from '../lib/mapsLink';
 import { createPlace, type CloudActor } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
+  PRODUCT_TYPE_PRESETS,
   STORAGE_LIMITS,
   type PlaceCategory,
+  type VisitStatus,
 } from '../types/place';
 import { PhotoUploader } from './PhotoUploader';
 import { StarRatingInput } from './StarRating';
 
 interface AddPlaceModalProps {
   actor?: CloudActor | null;
+  defaultVisitStatus?: VisitStatus;
   onClose: () => void;
-  onCreated: (placeId: string) => void;
+  onCreated: (placeId: string, visitStatus: VisitStatus) => void;
 }
 
 export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   actor,
+  defaultVisitStatus = 'visited',
   onClose,
   onCreated,
 }) => {
+  const [visitStatus, setVisitStatus] = useState<VisitStatus>(defaultVisitStatus);
   const [mapsInput, setMapsInput] = useState('');
   const [cleanMapsUrl, setCleanMapsUrl] = useState('');
   const [resolvingLink, setResolvingLink] = useState(false);
@@ -35,6 +43,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<PlaceCategory>('restaurant');
+  const [cuisineType, setCuisineType] = useState('');
   const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5>(5);
   const [comment, setComment] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
@@ -123,7 +132,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       );
       return;
     }
-    if (trimmedComment.length < STORAGE_LIMITS.COMMENT_MIN) {
+    if (visitStatus === 'visited' && trimmedComment.length < STORAGE_LIMITS.COMMENT_MIN) {
       setError('Lütfen mekan hakkında kısa bir yorum yazın.');
       return;
     }
@@ -135,14 +144,16 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       const placeId = await createPlace(actor, {
         name: trimmedName,
         category,
+        visitStatus,
+        cuisineType: cuisineType.trim(),
         mapsUrl: finalUrl,
-        initialRating: rating,
+        initialRating: visitStatus === 'visited' ? rating : undefined,
         initialComment: trimmedComment,
         photos,
       });
-      onCreated(placeId);
+      onCreated(placeId, visitStatus);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Mekan kaydedilemedi.');
+      setError(formatFriendlyFirestoreError(err, 'Mekan kaydedilemedi.'));
     } finally {
       setSubmitting(false);
     }
@@ -175,61 +186,62 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
         </div>
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 overflow-y-auto p-5 space-y-4">
-          {/* 1. Restoran / Mekan Adı & Tür */}
-          <div className="space-y-3">
-            <div>
-              <label htmlFor="place-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Restoran / Mekan Adı *
-              </label>
-              <input
-                id="place-name"
-                type="text"
-                required
-                maxLength={STORAGE_LIMITS.NAME_MAX}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Örn: Köşe Kahve"
-                className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
-              />
-            </div>
-
-            <div className="grid grid-cols-4 gap-1.5 p-1 bg-slate-100 rounded-xl">
-              {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setCategory(cat)}
-                  className={`min-h-[38px] px-2 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
-                    category === cat
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {CATEGORY_LABELS[cat]}
-                </button>
-              ))}
-            </div>
+          {/* Liste Durumu: Gidilenler vs Gidilecekler */}
+          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+            <button
+              type="button"
+              onClick={() => {
+                setVisitStatus('visited');
+                setError(null);
+              }}
+              className={`min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                visitStatus === 'visited'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+              <span>Gittiğim Yer</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setVisitStatus('wishlist');
+                setError(null);
+              }}
+              className={`min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                visitStatus === 'wishlist'
+                  ? 'bg-white text-slate-900 shadow-sm'
+                  : 'text-slate-600 hover:text-slate-900'
+              }`}
+            >
+              <BookmarkPlus className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+              <span>Gidilecek Yer</span>
+            </button>
           </div>
 
-          {/* 2. Optional Google Maps Share Link */}
+          {/* Google Maps Share Link (Öne çıkan pratik adım) */}
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <label htmlFor="maps-share-link" className="text-xs font-semibold text-slate-700">
-                Lokasyon Linki <span className="font-normal text-slate-500">(İsteğe Bağlı)</span>
+                Google Haritalar Linki{' '}
+                <span className="font-normal text-slate-500">
+                  ({visitStatus === 'wishlist' ? 'Seç & Yapıştır' : 'İsteğe Bağlı'})
+                </span>
               </label>
               <a
                 href="https://www.google.com/maps"
                 target="_blank"
                 rel="noopener noreferrer"
-                className="min-h-[32px] shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                className="min-h-[34px] shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
               >
-                <span>Haritayı Aç</span>
+                <span>Google&apos;da Seç</span>
                 <ExternalLink className="w-3.5 h-3.5" />
               </a>
             </div>
 
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              İsterseniz Google Haritalar&apos;dan <span className="font-medium text-slate-700">Paylaş → Bağlantıyı Kopyala</span> yapıp yapıştırabilirsiniz; link olmadan da kaydedebilirsiniz.
+              Google Haritalar&apos;dan <span className="font-medium text-slate-700">Paylaş → Bağlantıyı Kopyala</span> yapıp yapıştırdığınızda mekan adı otomatik doldurulur.
             </p>
 
             <div className="flex gap-2">
@@ -240,7 +252,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                   type="text"
                   value={mapsInput}
                   onChange={(e) => setMapsInput(e.target.value)}
-                  placeholder="https://maps.app.goo.gl/... (boş bırakılabilir)"
+                  placeholder="https://maps.app.goo.gl/..."
                   className="w-full min-h-[44px] pl-9 pr-8 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
                 />
                 {resolvingLink && (
@@ -267,17 +279,103 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             )}
           </div>
 
-          {/* 3. Puan */}
-          <div>
-            <span className="block text-xs font-semibold text-slate-700 mb-1">Puan *</span>
-            <StarRatingInput value={rating} onChange={setRating} />
+          {/* Mekan Adı & İşletme Türü */}
+          <div className="space-y-3">
+            <div>
+              <label htmlFor="place-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Restoran / Mekan Adı *
+              </label>
+              <input
+                id="place-name"
+                type="text"
+                required
+                maxLength={STORAGE_LIMITS.NAME_MAX}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Örn: Köşe Kebap"
+                className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              />
+            </div>
+
+            <div className="grid grid-cols-4 gap-1.5 p-1 bg-slate-100 rounded-xl">
+              {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => setCategory(cat)}
+                  className={`min-h-[38px] px-2 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                    category === cat
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {CATEGORY_LABELS[cat]}
+                </button>
+              ))}
+            </div>
           </div>
 
-          {/* 4. Yorum */}
+          {/* Ürün Çeşidi / Kategorisi */}
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label htmlFor="cuisine-type" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
+                <UtensilsCrossed className="w-3.5 h-3.5 text-emerald-700" />
+                <span>Ürün Çeşidi</span>
+              </label>
+              {cuisineType && (
+                <button
+                  type="button"
+                  onClick={() => setCuisineType('')}
+                  className="text-[11px] font-medium text-slate-500 hover:text-slate-800"
+                >
+                  Temizle
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap gap-1.5">
+              {PRODUCT_TYPE_PRESETS.map((preset) => {
+                const active = cuisineType.toLowerCase() === preset.toLowerCase();
+                return (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => setCuisineType(active ? '' : preset)}
+                    className={`min-h-[36px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
+                      active
+                        ? 'bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    {preset}
+                  </button>
+                );
+              })}
+            </div>
+
+            <input
+              id="cuisine-type"
+              type="text"
+              maxLength={STORAGE_LIMITS.CUISINE_TYPE_MAX}
+              value={cuisineType}
+              onChange={(e) => setCuisineType(e.target.value)}
+              placeholder="Listeden seçin veya özel ürün yazın (ör. Tantuni, Börek)"
+              className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+            />
+          </div>
+
+          {/* Puan & Yorum (Gittiğim Yer için zorunlu, Gidilecek Yer için sadece isteğe bağlı not) */}
+          {visitStatus === 'visited' && (
+            <div>
+              <span className="block text-xs font-semibold text-slate-700 mb-1">Puan *</span>
+              <StarRatingInput value={rating} onChange={setRating} />
+            </div>
+          )}
+
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label htmlFor="place-comment" className="text-xs font-semibold text-slate-700">
-                Yorum *
+                {visitStatus === 'visited' ? 'Yorum *' : 'Not (İsteğe Bağlı)'}
               </label>
               <span className="font-mono text-[11px] text-slate-400 tabular-nums">
                 {comment.length}/{STORAGE_LIMITS.COMMENT_MAX}
@@ -285,23 +383,26 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
             <textarea
               id="place-comment"
-              required
-              rows={3}
+              required={visitStatus === 'visited'}
+              rows={visitStatus === 'visited' ? 3 : 2}
               maxLength={STORAGE_LIMITS.COMMENT_MAX}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
-              placeholder="Yemekler, kahve veya ortam nasıldı?"
+              placeholder={
+                visitStatus === 'visited'
+                  ? 'Yemekler, kahve veya ortam nasıldı?'
+                  : 'Neden gitmek istiyorsunuz? (Örn: Kokoreçi meşhurmuş, hafta sonu bakalım)'
+              }
               className="w-full px-3.5 py-2.5 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600 resize-y"
             />
           </div>
 
-          {/* 5. Fotoğraf (İsteğe Bağlı) */}
-          <PhotoUploader photos={photos} onChange={setPhotos} />
+          {visitStatus === 'visited' && <PhotoUploader photos={photos} onChange={setPhotos} />}
 
           {error && (
             <div
               role="alert"
-              className="rounded-xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs font-medium text-rose-700"
+              className="rounded-xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs font-medium text-rose-700 break-words"
             >
               {error}
             </div>
@@ -321,7 +422,13 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
               className="flex-1 min-h-[46px] rounded-xl bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
             >
               {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
-              <span>{submitting ? 'Kaydediliyor...' : 'Listeye Ekle'}</span>
+              <span>
+                {submitting
+                  ? 'Kaydediliyor...'
+                  : visitStatus === 'wishlist'
+                    ? 'Gidilecekler Listesine Ekle'
+                    : 'Listeye Ekle'}
+              </span>
             </button>
           </div>
         </form>

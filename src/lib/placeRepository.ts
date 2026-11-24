@@ -8,6 +8,7 @@ import {
   importBackupToLocal,
   subscribeLocalPlaceReviews,
   subscribeLocalPlaces,
+  updateLocalPlaceCuisineType,
   updateLocalPlaceMapsUrl,
 } from './localDb';
 import {
@@ -19,6 +20,7 @@ import {
   importBackupToFirestore,
   subscribePlaceReviews,
   subscribePlaces,
+  updatePlaceCuisineType,
   updatePlaceMapsUrl,
   type AddReviewInput,
   type CreatePlaceInput,
@@ -71,6 +73,17 @@ export async function updateMapsUrl(
     return updatePlaceMapsUrl(placeId, mapsUrl);
   }
   return updateLocalPlaceMapsUrl(placeId, mapsUrl);
+}
+
+export async function updateCuisineType(
+  actor: CloudActor | null | undefined,
+  placeId: string,
+  cuisineType: string
+): Promise<void> {
+  if (actor) {
+    return updatePlaceCuisineType(placeId, cuisineType);
+  }
+  return updateLocalPlaceCuisineType(placeId, cuisineType);
 }
 
 export async function addReview(

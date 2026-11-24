@@ -1,6 +1,8 @@
 import React, { useEffect, useState } from 'react';
 import {
+  Bookmark,
   Check,
+  CheckCircle2,
   Copy,
   ExternalLink,
   Link2,
@@ -8,19 +10,23 @@ import {
   MessageSquarePlus,
   Star,
   Trash2,
+  UtensilsCrossed,
   X,
 } from 'lucide-react';
+import { formatFriendlyFirestoreError } from '../lib/firebase';
 import { extractSharedMapsInput, getPlaceExternalMapsUrl } from '../lib/mapsLink';
 import {
   addReview,
   deleteReview,
   removePlace,
   subscribeUserOrLocalPlaceReviews,
+  updateCuisineType,
   updateMapsUrl,
   type CloudActor,
 } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
+  PRODUCT_TYPE_PRESETS,
   STORAGE_LIMITS,
   type PlaceItem,
   type ReviewItem,
@@ -66,9 +72,17 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [linkDraft, setLinkDraft] = useState(place.mapsUrl || '');
   const [linkError, setLinkError] = useState<string | null>(null);
 
+  const [editingCuisine, setEditingCuisine] = useState(false);
+  const [cuisineDraft, setCuisineDraft] = useState(place.cuisineType || '');
+  const [savingCuisine, setSavingCuisine] = useState(false);
+
   useEffect(() => {
     setLinkDraft(place.mapsUrl || '');
   }, [place.mapsUrl]);
+
+  useEffect(() => {
+    setCuisineDraft(place.cuisineType || '');
+  }, [place.cuisineType]);
 
   useEffect(() => {
     setLoadingReviews(true);
@@ -80,7 +94,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
         setLoadingReviews(false);
       },
       (err) => {
-        setError(err.message);
+        setError(formatFriendlyFirestoreError(err, 'Yorumlar yüklenemedi.'));
         setLoadingReviews(false);
       }
     );
@@ -113,7 +127,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       setRating(5);
       setShowReviewForm(false);
     } catch (err) {
-      setError(err instanceof Error ? err.message : 'Yorum eklenemedi.');
+      setError(formatFriendlyFirestoreError(err, 'Yorum eklenemedi.'));
     } finally {
       setSubmitting(false);
     }
@@ -138,12 +152,27 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
     setLinkError(null);
   };
 
+  const handleSaveCuisine = async (nextValue?: string) => {
+    setSavingCuisine(true);
+    try {
+      const valueToSave = (typeof nextValue === 'string' ? nextValue : cuisineDraft).trim();
+      await updateCuisineType(actor, place.id, valueToSave);
+      setCuisineDraft(valueToSave);
+      setEditingCuisine(false);
+    } catch (err) {
+      setError(formatFriendlyFirestoreError(err, 'Ürün çeşidi kaydedilemedi.'));
+    } finally {
+      setSavingCuisine(false);
+    }
+  };
+
   const handleDeletePlace = async () => {
     await removePlace(actor, place.id);
     onDeleted();
   };
 
   const canManagePlace = !actor || place.ownerId === actor.uid;
+  const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
 
   const hasSavedMapsUrl = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
   const fallbackSearchUrl = getPlaceExternalMapsUrl(place);
@@ -174,8 +203,10 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
 
           <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
             <div className="min-w-0">
-              <p className="text-xs text-slate-500">
-                {CATEGORY_LABELS[place.category]} · Ekleyen: <span className="font-medium text-slate-700">{place.authorName}</span>
+              <p className="text-xs text-slate-500 truncate">
+                {CATEGORY_LABELS[place.category]}
+                {place.cuisineType ? ` · ${place.cuisineType}` : ''}
+                {' · '}Ekleyen: <span className="font-medium text-slate-700">{place.authorName}</span>
               </p>
               <h2 id="detail-place-title" className="text-lg font-semibold text-slate-900 truncate">
                 {place.name}
@@ -213,9 +244,33 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
               </div>
             )}
 
+            {isWishlist && (
+              <div className="rounded-2xl bg-amber-50/70 border border-amber-200 p-4 space-y-2.5">
+                <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
+                  <Bookmark className="w-4 h-4 text-amber-600 shrink-0" />
+                  <span>Gidilecekler Listesinde · Henüz puanlanmadı</span>
+                </div>
+                {place.latestComment && (
+                  <p className="text-xs text-amber-950 leading-relaxed">{place.latestComment}</p>
+                )}
+                <button
+                  type="button"
+                  onClick={() => setShowReviewForm(true)}
+                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 transition-colors"
+                >
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Gidildi Olarak İşaretle &amp; Puanla</span>
+                </button>
+              </div>
+            )}
+
             <div className="space-y-3 pb-4 border-b border-slate-200">
               <div className="flex items-center justify-between gap-3">
-                <StarRatingDisplay rating={place.avgRating} reviewCount={place.reviewCount} size="md" />
+                {isWishlist ? (
+                  <span className="text-xs font-medium text-slate-500">Henüz gidilmedi</span>
+                ) : (
+                  <StarRatingDisplay rating={place.avgRating} reviewCount={place.reviewCount} size="md" />
+                )}
                 {hasSavedMapsUrl ? (
                   <a
                     href={place.mapsUrl}
@@ -321,6 +376,78 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                   )}
                 </div>
               )}
+
+              {/* Ürün Çeşidi Görüntüleme / Düzenleme */}
+              {!editingCuisine ? (
+                <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <UtensilsCrossed className="w-4 h-4 text-emerald-700 shrink-0" />
+                    <span className="text-xs text-slate-700 truncate">
+                      Ürün çeşidi:{' '}
+                      <span className="font-semibold text-slate-900">
+                        {place.cuisineType || 'Belirtilmedi'}
+                      </span>
+                    </span>
+                  </div>
+                  {canManagePlace && (
+                    <button
+                      type="button"
+                      onClick={() => setEditingCuisine(true)}
+                      className="min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium text-emerald-700 hover:bg-emerald-50 shrink-0"
+                    >
+                      {place.cuisineType ? 'Değiştir' : 'Seç'}
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2.5">
+                  <div className="flex flex-wrap gap-1.5">
+                    {PRODUCT_TYPE_PRESETS.map((preset) => (
+                      <button
+                        key={preset}
+                        type="button"
+                        disabled={savingCuisine}
+                        onClick={() => void handleSaveCuisine(preset)}
+                        className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
+                          cuisineDraft.toLowerCase() === preset.toLowerCase()
+                            ? 'bg-emerald-700 text-white border-emerald-700'
+                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                        }`}
+                      >
+                        {preset}
+                      </button>
+                    ))}
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      maxLength={STORAGE_LIMITS.CUISINE_TYPE_MAX}
+                      value={cuisineDraft}
+                      onChange={(e) => setCuisineDraft(e.target.value)}
+                      placeholder="Özel ürün türü yazın..."
+                      className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-base sm:text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    />
+                    <button
+                      type="button"
+                      disabled={savingCuisine}
+                      onClick={() => void handleSaveCuisine()}
+                      className="min-h-[40px] px-3 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50"
+                    >
+                      Kaydet
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCuisine(false);
+                        setCuisineDraft(place.cuisineType || '');
+                      }}
+                      className="min-h-[40px] px-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-600"
+                    >
+                      İptal
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
 
             <div className="space-y-4">
@@ -369,7 +496,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                   <PhotoUploader photos={photos} onChange={setPhotos} />
 
                   {error && (
-                    <p role="alert" className="text-xs text-rose-600 font-medium">
+                    <p role="alert" className="text-xs text-rose-600 font-medium break-words">
                       {error}
                     </p>
                   )}

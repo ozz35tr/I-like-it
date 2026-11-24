@@ -31,8 +31,19 @@
         },
         "category": {
           "type": "string",
-          "description": "Category key.",
+          "description": "Venue category key.",
           "enum": ["restaurant", "cafe", "bakery", "bistro"]
+        },
+        "visitStatus": {
+          "type": "string",
+          "description": "Whether the place has been visited or is on the wishlist to visit.",
+          "enum": ["visited", "wishlist"]
+        },
+        "cuisineType": {
+          "type": "string",
+          "description": "Product or cuisine specialty (e.g., Kebap, Çiğ Köfte, Kokoreç, Hamburger, Balık).",
+          "minLength": 0,
+          "maxLength": 40
         },
         "mapsUrl": {
           "type": "string",
@@ -48,7 +59,7 @@
         },
         "latestComment": {
           "type": "string",
-          "description": "Most recent review comment summary for list display.",
+          "description": "Most recent review comment or wishlist note summary.",
           "minLength": 0,
           "maxLength": 1500
         },

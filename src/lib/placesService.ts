@@ -6,6 +6,7 @@ import {
   query,
   runTransaction,
   serverTimestamp,
+  setDoc,
   Timestamp,
   updateDoc,
   where,
@@ -17,6 +18,7 @@ import {
   type PlaceCategory,
   type PlaceItem,
   type ReviewItem,
+  type VisitStatus,
 } from '../types/place';
 import { db, handleFirestoreError, OperationType } from './firebase';
 
@@ -61,6 +63,11 @@ function mapPlaceDoc(id: string, data: DocumentData): PlaceItem {
       data.category === 'bistro'
         ? data.category
         : 'restaurant',
+    visitStatus: data.visitStatus === 'wishlist' ? 'wishlist' : 'visited',
+    cuisineType:
+      typeof data.cuisineType === 'string'
+        ? data.cuisineType.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX)
+        : '',
     mapsUrl: typeof data.mapsUrl === 'string' ? data.mapsUrl : '',
     coverImage: typeof data.coverImage === 'string' ? data.coverImage : '',
     latestComment: typeof data.latestComment === 'string' ? data.latestComment : '',
@@ -148,9 +155,11 @@ export function subscribePlaceReviews(
 export interface CreatePlaceInput {
   name: string;
   category: PlaceCategory;
+  visitStatus?: VisitStatus;
+  cuisineType?: string;
   mapsUrl?: string;
-  initialRating: 1 | 2 | 3 | 4 | 5;
-  initialComment: string;
+  initialRating?: 1 | 2 | 3 | 4 | 5;
+  initialComment?: string;
   photos: string[];
 }
 
@@ -160,18 +169,48 @@ export async function createPlaceWithInitialReview(
   input: CreatePlaceInput
 ): Promise<string> {
   const placeId = generateId();
-  const reviewId = generateId();
   const placePath = `places/${placeId}`;
-  const reviewPath = `places/${placeId}/reviews/${reviewId}`;
+  const visitStatus: VisitStatus = input.visitStatus === 'wishlist' ? 'wishlist' : 'visited';
 
   const cleanAuthor = resolveSafeAuthorName(authorName);
   const cleanName = input.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX);
+  const cleanCuisine = (input.cuisineType || '').trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
   const cleanMapsUrl = (input.mapsUrl || '').trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
-  const cleanComment = input.initialComment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
+  const cleanComment = (input.initialComment || '').trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
   const cleanPhotos = input.photos
     .filter((p) => typeof p === 'string' && p.length <= 160000)
     .slice(0, STORAGE_LIMITS.MAX_PHOTOS);
   const coverImage = cleanPhotos[0] || '';
+
+  if (visitStatus === 'wishlist') {
+    try {
+      await setDoc(doc(db, placePath), {
+        ownerId: userId,
+        authorName: cleanAuthor,
+        visibility: 'shared',
+        name: cleanName,
+        category: input.category,
+        visitStatus: 'wishlist',
+        cuisineType: cleanCuisine,
+        mapsUrl: cleanMapsUrl,
+        coverImage,
+        latestComment: cleanComment,
+        avgRating: 0,
+        reviewCount: 0,
+        ratingSum: 0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return placeId;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, placePath);
+    }
+  }
+
+  const reviewId = generateId();
+  const reviewPath = `places/${placeId}/reviews/${reviewId}`;
+  const rating: 1 | 2 | 3 | 4 | 5 = input.initialRating || 5;
+  const finalComment = cleanComment.length >= STORAGE_LIMITS.COMMENT_MIN ? cleanComment : 'Ziyaret notu';
 
   const batch = writeBatch(db);
   batch.set(doc(db, placePath), {
@@ -180,12 +219,14 @@ export async function createPlaceWithInitialReview(
     visibility: 'shared',
     name: cleanName,
     category: input.category,
+    visitStatus: 'visited',
+    cuisineType: cleanCuisine,
     mapsUrl: cleanMapsUrl,
     coverImage,
-    latestComment: cleanComment,
-    avgRating: input.initialRating,
+    latestComment: finalComment,
+    avgRating: rating,
     reviewCount: 1,
-    ratingSum: input.initialRating,
+    ratingSum: rating,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
   });
@@ -195,8 +236,8 @@ export async function createPlaceWithInitialReview(
     authorName: cleanAuthor,
     visibility: 'shared',
     placeId,
-    rating: input.initialRating,
-    comment: cleanComment,
+    rating,
+    comment: finalComment,
     photos: cleanPhotos,
     createdAt: serverTimestamp(),
     updatedAt: serverTimestamp(),
@@ -218,6 +259,21 @@ export async function updatePlaceMapsUrl(
   try {
     await updateDoc(doc(db, placePath), {
       mapsUrl: mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX),
+      updatedAt: serverTimestamp(),
+    });
+  } catch (error) {
+    handleFirestoreError(error, OperationType.UPDATE, placePath);
+  }
+}
+
+export async function updatePlaceCuisineType(
+  placeId: string,
+  cuisineType: string
+): Promise<void> {
+  const placePath = `places/${placeId}`;
+  try {
+    await updateDoc(doc(db, placePath), {
+      cuisineType: cuisineType.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX),
       updatedAt: serverTimestamp(),
     });
   } catch (error) {
@@ -280,6 +336,7 @@ export async function addReviewToPlace(
         ratingSum: nextSum,
         latestComment: cleanComment,
         coverImage: nextCover,
+        visitStatus: 'visited',
         updatedAt: serverTimestamp(),
       });
     });
@@ -384,6 +441,8 @@ export async function migrateLegacyPersonalCloudToShared(
       const newPlaceId = await createPlaceWithInitialReview(userId, authorName, {
         name: p.name,
         category: p.category,
+        visitStatus: p.visitStatus,
+        cuisineType: p.cuisineType,
         mapsUrl: p.mapsUrl,
         initialRating: firstRev?.rating || 5,
         initialComment:
@@ -440,7 +499,7 @@ export async function exportFirestoreBackup(): Promise<BackupPayload> {
     );
 
     return {
-      version: 3,
+      version: 4,
       exportedAt: new Date().toISOString(),
       places,
       reviews,
@@ -486,7 +545,8 @@ export async function importBackupToFirestore(
     if (!p || typeof p.name !== 'string' || p.name.trim().length < 2) continue;
     const relatedReviews = reviewsByPlace.get(p.id) || [];
     const firstRev = relatedReviews[0];
-    const comment = (firstRev?.comment || p.latestComment || 'Ziyaret notu').trim();
+    const isWishlist = p.visitStatus === 'wishlist' && relatedReviews.length === 0;
+    const comment = (firstRev?.comment || p.latestComment || (isWishlist ? '' : 'Ziyaret notu')).trim();
     const rating: 1 | 2 | 3 | 4 | 5 =
       firstRev?.rating ||
       (p.avgRating >= 4.5
@@ -508,9 +568,11 @@ export async function importBackupToFirestore(
         p.category === 'bistro'
           ? p.category
           : 'restaurant',
+      visitStatus: isWishlist ? 'wishlist' : 'visited',
+      cuisineType: typeof p.cuisineType === 'string' ? p.cuisineType : '',
       mapsUrl: typeof p.mapsUrl === 'string' ? p.mapsUrl : '',
       initialRating: rating,
-      initialComment: comment.length >= 2 ? comment : 'Ziyaret notu',
+      initialComment: isWishlist ? comment : comment.length >= 2 ? comment : 'Ziyaret notu',
       photos: firstRev?.photos || (p.coverImage ? [p.coverImage] : []),
     });
 

@@ -106,6 +106,39 @@ export function handleFirestoreError(
   throw new Error(JSON.stringify(errInfo));
 }
 
+export function formatFriendlyFirestoreError(err: unknown, fallback: string): string {
+  const raw = err instanceof Error ? err.message : String(err || '');
+  if (!raw) return fallback;
+
+  if (raw.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<FirestoreErrorInfo>;
+      const inner = parsed.error || '';
+      if (inner.includes('Quota exceeded')) {
+        return 'Ücretsiz günlük Firestore kullanım kotası doldu. Kota yarın sıfırlanır.';
+      }
+      if (inner.includes('Missing or insufficient permissions')) {
+        if (parsed.authInfo && parsed.authInfo.emailVerified === false) {
+          return 'Hesabınızın e-posta doğrulaması eksik görünüyor. Doğrulanmış bir Google hesabı ile giriş yapın.';
+        }
+        return 'Bulut veritabanı izin hatası oluştu. Lütfen sayfayı yenileyip tekrar deneyin.';
+      }
+      if (inner) return inner;
+    } catch {
+      // Fall through to raw message
+    }
+  }
+
+  if (raw.includes('Quota exceeded')) {
+    return 'Ücretsiz günlük Firestore kullanım kotası doldu. Kota yarın sıfırlanır.';
+  }
+  if (raw.includes('Missing or insufficient permissions')) {
+    return 'Bulut veritabanı izin hatası oluştu. Lütfen sayfayı yenileyip tekrar deneyin.';
+  }
+
+  return raw;
+}
+
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'test', 'connection'));

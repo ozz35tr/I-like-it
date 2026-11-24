@@ -50,9 +50,11 @@ import {
 } from './lib/placesService';
 import {
   CATEGORY_LABELS,
+  PRODUCT_TYPE_PRESETS,
   type PlaceItem,
   type SortDirection,
   type SortField,
+  type VisitStatus,
 } from './types/place';
 
 function renderStars(avgRating: number) {
@@ -116,6 +118,8 @@ export default function App() {
   const [loadingPlaces, setLoadingPlaces] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
+  const [statusFilter, setStatusFilter] = useState<'all' | VisitStatus>('all');
+  const [productFilter, setProductFilter] = useState<string>('all');
 
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
@@ -297,23 +301,79 @@ export default function App() {
     );
   };
 
+  const visitedCount = useMemo(
+    () => allPlaces.filter((p) => p.visitStatus !== 'wishlist').length,
+    [allPlaces]
+  );
+
+  const wishlistCount = useMemo(
+    () => allPlaces.filter((p) => p.visitStatus === 'wishlist').length,
+    [allPlaces]
+  );
+
+  const statusScopedPlaces = useMemo(() => {
+    if (statusFilter === 'all') return allPlaces;
+    return allPlaces.filter((p) =>
+      statusFilter === 'wishlist' ? p.visitStatus === 'wishlist' : p.visitStatus !== 'wishlist'
+    );
+  }, [allPlaces, statusFilter]);
+
+  const productFilterOptions = useMemo(() => {
+    const counts = new Map<string, { label: string; count: number }>();
+
+    for (const preset of PRODUCT_TYPE_PRESETS) {
+      counts.set(preset.toLowerCase(), { label: preset, count: 0 });
+    }
+
+    for (const p of statusScopedPlaces) {
+      const tag = (p.cuisineType || '').trim();
+      if (!tag) continue;
+      const key = tag.toLowerCase();
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        counts.set(key, { label: tag, count: 1 });
+      }
+    }
+
+    return Array.from(counts.entries())
+      .map(([key, info]) => ({ key, ...info }))
+      .sort((a, b) => {
+        if (b.count > 0 && a.count === 0) return 1;
+        if (a.count > 0 && b.count === 0) return -1;
+        if (b.count !== a.count) return b.count - a.count;
+        return a.label.localeCompare(b.label, 'tr');
+      });
+  }, [statusScopedPlaces]);
+
   const sortedAndFilteredPlaces = useMemo(() => {
     const q = searchText.trim().toLowerCase();
-    const filtered = q
-      ? allPlaces.filter(
-          (p) =>
-            p.name.toLowerCase().includes(q) ||
-            (p.latestComment || '').toLowerCase().includes(q) ||
-            (p.authorName || '').toLowerCase().includes(q) ||
-            CATEGORY_LABELS[p.category].toLowerCase().includes(q)
-        )
-      : allPlaces;
+    const filtered = statusScopedPlaces.filter((p) => {
+      if (productFilter !== 'all') {
+        const tag = (p.cuisineType || '').trim().toLowerCase();
+        if (tag !== productFilter) return false;
+      }
+      if (!q) return true;
+      return (
+        p.name.toLowerCase().includes(q) ||
+        (p.cuisineType || '').toLowerCase().includes(q) ||
+        (p.latestComment || '').toLowerCase().includes(q) ||
+        (p.authorName || '').toLowerCase().includes(q) ||
+        CATEGORY_LABELS[p.category].toLowerCase().includes(q)
+      );
+    });
 
     const factor = sortDir === 'asc' ? 1 : -1;
     return [...filtered].sort((a, b) => {
       switch (sortField) {
         case 'name':
           return a.name.localeCompare(b.name, 'tr') * factor;
+        case 'product': {
+          const prodA = a.cuisineType || CATEGORY_LABELS[a.category];
+          const prodB = b.cuisineType || CATEGORY_LABELS[b.category];
+          return (prodA.localeCompare(prodB, 'tr') || a.name.localeCompare(b.name, 'tr')) * factor;
+        }
         case 'rating':
           return (a.avgRating - b.avgRating || a.reviewCount - b.reviewCount) * factor;
         case 'location':
@@ -325,7 +385,7 @@ export default function App() {
           return (a.updatedAt - b.updatedAt) * factor;
       }
     });
-  }, [allPlaces, searchText, sortField, sortDir]);
+  }, [statusScopedPlaces, productFilter, searchText, sortField, sortDir]);
 
   const handleExport = async () => {
     const payload = await exportBackup(actor);
@@ -495,26 +555,115 @@ export default function App() {
           </div>
         )}
 
-        {/* Search & Count */}
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-          <div className="relative flex-1 max-w-md">
-            <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-            <input
-              type="search"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              placeholder="Mekan, yorum veya ekleyen kişide ara..."
-              className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
-            />
+        {/* Gidilenler / Gidilecekler Sekmeleri & Arama */}
+        <div className="space-y-3">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div
+              role="tablist"
+              aria-label="Mekan listesi görünümü"
+              className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full overflow-x-auto"
+            >
+              {(
+                [
+                  ['all', 'Tümü', allPlaces.length],
+                  ['visited', 'Gidilenler', visitedCount],
+                  ['wishlist', 'Gidilecekler', wishlistCount],
+                ] as const
+              ).map(([key, label, count]) => {
+                const active = statusFilter === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    role="tab"
+                    aria-selected={active}
+                    onClick={() => setStatusFilter(key)}
+                    className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                      active
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {label} ({count})
+                  </button>
+                );
+              })}
+            </div>
+
+            <p className="text-xs text-slate-500 tabular-nums shrink-0">
+              Gösterilen{' '}
+              <span className="font-mono font-semibold text-slate-900">
+                {sortedAndFilteredPlaces.length}
+              </span>{' '}
+              mekan · {actor ? 'Ortak liste · Bulut senkronize' : 'Bu cihazda kayıtlı'}
+            </p>
           </div>
 
-          <p className="text-xs text-slate-500 tabular-nums shrink-0">
-            Toplam{' '}
-            <span className="font-mono font-semibold text-slate-900">
-              {sortedAndFilteredPlaces.length}
-            </span>{' '}
-            mekan · {actor ? 'Ortak liste · Bulut senkronize' : 'Bu cihazda kayıtlı'}
-          </p>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
+            <div className="relative flex-1 max-w-md">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="search"
+                value={searchText}
+                onChange={(e) => setSearchText(e.target.value)}
+                placeholder="Mekan, ürün (ör. kebap, kokoreç), yorum ara..."
+                className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              />
+            </div>
+
+            <div className="sm:w-56 shrink-0">
+              <label htmlFor="product-select-filter" className="sr-only">
+                Ürün çeşidine göre filtrele
+              </label>
+              <select
+                id="product-select-filter"
+                value={productFilter}
+                onChange={(e) => setProductFilter(e.target.value)}
+                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              >
+                <option value="all">Tüm Ürün Çeşitleri</option>
+                {productFilterOptions.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label}
+                    {opt.count > 0 ? ` (${opt.count})` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+
+          {/* Hızlı Ürün Çeşidi Seçim Çubuğu */}
+          <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
+            <button
+              type="button"
+              onClick={() => setProductFilter('all')}
+              className={`min-h-[36px] px-3 py-1 rounded-xl text-xs font-medium border whitespace-nowrap shrink-0 transition-colors ${
+                productFilter === 'all'
+                  ? 'bg-emerald-700 text-white border-emerald-700'
+                  : 'bg-white text-slate-600 border-slate-200 hover:text-slate-900'
+              }`}
+            >
+              Tümü
+            </button>
+            {productFilterOptions.map((opt) => {
+              const active = productFilter === opt.key;
+              return (
+                <button
+                  key={opt.key}
+                  type="button"
+                  onClick={() => setProductFilter(active ? 'all' : opt.key)}
+                  className={`min-h-[36px] px-3 py-1 rounded-xl text-xs font-medium border whitespace-nowrap shrink-0 tabular-nums transition-colors ${
+                    active
+                      ? 'bg-emerald-700 text-white border-emerald-700'
+                      : 'bg-white text-slate-600 border-slate-200 hover:text-slate-900'
+                  }`}
+                >
+                  {opt.label}
+                  {opt.count > 0 ? ` (${opt.count})` : ''}
+                </button>
+              );
+            })}
+          </div>
         </div>
 
         {loadingPlaces ? (
@@ -526,13 +675,13 @@ export default function App() {
           <div className="rounded-2xl bg-white border border-slate-200 p-6 sm:p-8 text-center space-y-3.5 max-w-xl mx-auto mt-6">
             <h1 className="text-lg sm:text-xl font-semibold text-slate-900">
               {allPlaces.length === 0
-                ? 'Gittiğiniz Mekanları Listeye Ekleyin'
-                : 'Aramanızla Eşleşen Mekan Yok'}
+                ? 'Gittiğiniz ve Gideceğiniz Mekanları Ekleyin'
+                : 'Seçili Filtreye Uygun Mekan Yok'}
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {allPlaces.length === 0
-                ? 'Giriş veya izin gerekmeden hemen mekan ekleyebilirsiniz. Paylaşılan ortak listeye katılmak ve diğer kişilerin yorumlarını görmek için üstteki Ortak Liste seçeneğiyle Google hesabınıza bağlanabilirsiniz.'
-                : 'Farklı bir kelime deneyebilir veya arama kutusunu temizleyebilirsiniz.'}
+                ? 'İster gittiğiniz yerleri puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gidilecekler listenize ekleyin.'
+                : 'Farklı bir ürün çeşidi veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
             </p>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
               <button
@@ -541,8 +690,21 @@ export default function App() {
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-700 text-white text-xs sm:text-sm font-semibold hover:bg-emerald-800 transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                <span>Yeni Mekan Ekle</span>
+                <span>{statusFilter === 'wishlist' ? 'Gidilecek Yer Ekle' : 'Yeni Mekan Ekle'}</span>
               </button>
+              {(productFilter !== 'all' || searchText || statusFilter !== 'all') && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProductFilter('all');
+                    setSearchText('');
+                    setStatusFilter('all');
+                  }}
+                  className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs sm:text-sm font-semibold hover:bg-slate-50 transition-colors"
+                >
+                  Filtreleri Temizle
+                </button>
+              )}
               <a
                 href="https://www.google.com/maps"
                 target="_blank"
@@ -562,31 +724,41 @@ export default function App() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold text-slate-600">
-                      <th scope="col" className="py-3 px-4 w-[24%]">
+                      <th scope="col" className="py-3 px-4 w-[22%]">
                         <button
                           type="button"
                           onClick={() => handleSort('name')}
-                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1"
+                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
-                          <span>Restoran / Mekan Adı</span>
+                          <span>Mekan Adı</span>
                           {renderSortIcon('name')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[16%]">
+                      <th scope="col" className="py-3 px-4 w-[14%]">
+                        <button
+                          type="button"
+                          onClick={() => handleSort('product')}
+                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
+                        >
+                          <span>Ürün Çeşidi</span>
+                          {renderSortIcon('product')}
+                        </button>
+                      </th>
+                      <th scope="col" className="py-3 px-4 w-[14%]">
                         <button
                           type="button"
                           onClick={() => handleSort('rating')}
-                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1"
+                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
-                          <span>Puan</span>
+                          <span>Puan / Durum</span>
                           {renderSortIcon('rating')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[18%]">
+                      <th scope="col" className="py-3 px-4 w-[14%]">
                         <button
                           type="button"
                           onClick={() => handleSort('location')}
-                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1"
+                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
                           <span>Lokasyon</span>
                           {renderSortIcon('location')}
@@ -596,9 +768,9 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleSort('comment')}
-                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1"
+                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
-                          <span>Yorumlar</span>
+                          <span>Yorum / Not</span>
                           {renderSortIcon('comment')}
                         </button>
                       </th>
@@ -606,7 +778,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => handleSort('date')}
-                          className="inline-flex items-center gap-1 hover:text-slate-900 py-1"
+                          className="inline-flex items-center gap-1 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
                           <span>Tarih</span>
                           {renderSortIcon('date')}
@@ -618,6 +790,7 @@ export default function App() {
                     {sortedAndFilteredPlaces.map((place) => {
                       const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
                       const canDeletePlace = !actor || place.ownerId === actor.uid;
+                      const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
                       return (
                         <tr
                           key={place.id}
@@ -657,11 +830,30 @@ export default function App() {
                           </td>
 
                           <td className="py-3.5 px-4">
-                            {renderStars(place.avgRating)}
-                            {place.reviewCount > 1 && (
-                              <p className="text-[11px] text-slate-400 mt-0.5 tabular-nums">
-                                {place.reviewCount} yorum
+                            <p className="text-xs font-medium text-slate-800">
+                              {place.cuisineType || CATEGORY_LABELS[place.category]}
+                            </p>
+                            {place.cuisineType && (
+                              <p className="text-[11px] text-slate-400">
+                                {CATEGORY_LABELS[place.category]}
                               </p>
+                            )}
+                          </td>
+
+                          <td className="py-3.5 px-4">
+                            {isWishlist ? (
+                              <span className="text-xs font-semibold text-amber-700">
+                                Gidilecek
+                              </span>
+                            ) : (
+                              <>
+                                {renderStars(place.avgRating)}
+                                {place.reviewCount > 1 && (
+                                  <p className="text-[11px] text-slate-400 mt-0.5 tabular-nums">
+                                    {place.reviewCount} yorum
+                                  </p>
+                                )}
+                              </>
                             )}
                           </td>
 
@@ -694,11 +886,14 @@ export default function App() {
                               className="text-left w-full group focus-visible:outline-none"
                             >
                               <p className="text-sm text-slate-700 line-clamp-2 group-hover:text-slate-900">
-                                {place.latestComment || 'Yorum eklemek için dokunun'}
+                                {place.latestComment ||
+                                  (isWishlist
+                                    ? 'Gidildi olarak işaretlemek için dokunun'
+                                    : 'Yorum eklemek için dokunun')}
                               </p>
                               <span className="inline-flex items-center gap-1 text-[11px] font-medium text-slate-400 group-hover:text-emerald-700 mt-1">
                                 {place.coverImage && <ImageIcon className="w-3 h-3" />}
-                                <span>Detay / Yorum Ekle</span>
+                                <span>{isWishlist ? 'Detay / Puanla' : 'Detay / Yorum Ekle'}</span>
                               </span>
                             </button>
                           </td>
@@ -737,6 +932,7 @@ export default function App() {
                 {(
                   [
                     ['name', 'Mekan Adı'],
+                    ['product', 'Ürün Çeşidi'],
                     ['rating', 'Puan'],
                     ['comment', 'Yorumlar'],
                     ['date', 'Tarih'],
@@ -773,6 +969,7 @@ export default function App() {
                 {sortedAndFilteredPlaces.map((place) => {
                   const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
                   const canDeletePlace = !actor || place.ownerId === actor.uid;
+                  const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
                   return (
                     <div key={place.id} className="p-3.5 space-y-2">
                       <div className="flex items-start justify-between gap-3">
@@ -795,6 +992,7 @@ export default function App() {
                             </p>
                             <p className="text-[11px] text-slate-500 truncate">
                               {CATEGORY_LABELS[place.category]}
+                              {place.cuisineType ? ` · ${place.cuisineType}` : ''}
                               {actor
                                 ? ` · Ekleyen: ${place.authorName}${
                                     place.ownerId === actor.uid ? ' (Siz)' : ''
@@ -804,7 +1002,13 @@ export default function App() {
                           </div>
                         </button>
 
-                        <div className="shrink-0 pt-0.5">{renderStars(place.avgRating)}</div>
+                        <div className="shrink-0 pt-0.5">
+                          {isWishlist ? (
+                            <span className="text-xs font-semibold text-amber-700">Gidilecek</span>
+                          ) : (
+                            renderStars(place.avgRating)
+                          )}
+                        </div>
                       </div>
 
                       <button
@@ -813,7 +1017,10 @@ export default function App() {
                         className="w-full text-left"
                       >
                         <p className="text-xs text-slate-700 leading-relaxed line-clamp-2">
-                          {place.latestComment || 'Yorum eklemek için dokunun'}
+                          {place.latestComment ||
+                            (isWishlist
+                              ? 'Gidildi olarak işaretlemek için dokunun'
+                              : 'Yorum eklemek için dokunun')}
                         </p>
                       </button>
 
@@ -844,7 +1051,7 @@ export default function App() {
                             onClick={() => setDetailPlace(place)}
                             className="min-h-[36px] px-2.5 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-100"
                           >
-                            Yorumlar ({place.reviewCount})
+                            {isWishlist ? 'Detay / Puanla' : `Yorumlar (${place.reviewCount})`}
                           </button>
                           {canDeletePlace && (
                             <button
@@ -870,9 +1077,13 @@ export default function App() {
       {showAddModal && (
         <AddPlaceModal
           actor={actor}
+          defaultVisitStatus={statusFilter === 'wishlist' ? 'wishlist' : 'visited'}
           onClose={() => setShowAddModal(false)}
-          onCreated={() => {
+          onCreated={(_id, createdStatus) => {
             setShowAddModal(false);
+            if (statusFilter !== 'all' && statusFilter !== createdStatus) {
+              setStatusFilter(createdStatus);
+            }
           }}
         />
       )}
