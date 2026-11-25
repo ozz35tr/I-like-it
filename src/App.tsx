@@ -1040,7 +1040,7 @@ export default function App() {
                   {(
                     [
                       ['all', 'Tümü', visitedCount + wishlistCount],
-                      ['visited', 'Gidilenler', visitedCount],
+                      ['visited', 'Lezzet Noktaları', visitedCount],
                       ['wishlist', 'Gidilecekler', wishlistCount],
                     ] as const
                   ).map(([key, label, count]) => {
@@ -1091,7 +1091,7 @@ export default function App() {
             ) : (
               <div className="inline-flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-900 tabular-nums">
-                  Gidilenler ({visitedCount})
+                  Lezzet Noktaları ({visitedCount})
                 </span>
                 <span className="text-xs text-slate-500">
                   Kişisel gidilecekler listeniz için giriş yapabilirsiniz
