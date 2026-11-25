@@ -199,6 +199,75 @@ export function subscribePlaces(
   );
 }
 
+export interface UserReviewLookupCacheEntry {
+  signature: string;
+  hasReview: boolean;
+}
+
+export async function findUserReviewedPlaceIds(
+  userId: string,
+  places: PlaceItem[],
+  cache: Map<string, UserReviewLookupCacheEntry>
+): Promise<Set<string>> {
+  const result = new Set<string>();
+  const activeIds = new Set(places.map((p) => p.id));
+
+  for (const key of Array.from(cache.keys())) {
+    if (!activeIds.has(key)) {
+      cache.delete(key);
+    }
+  }
+
+  const targetsToFetch: Array<{ place: PlaceItem; signature: string }> = [];
+
+  for (const place of places) {
+    const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
+    if (isWishlist) continue;
+
+    if (place.ownerId === userId) {
+      result.add(place.id);
+      continue;
+    }
+
+    if (place.reviewCount <= 0) continue;
+
+    const signature = `${place.reviewCount}:${place.updatedAt}`;
+    const cached = cache.get(place.id);
+    if (cached && cached.signature === signature) {
+      if (cached.hasReview) {
+        result.add(place.id);
+      }
+    } else {
+      targetsToFetch.push({ place, signature });
+    }
+  }
+
+  for (let i = 0; i < targetsToFetch.length; i += 8) {
+    const chunk = targetsToFetch.slice(i, i + 8);
+    await Promise.all(
+      chunk.map(async ({ place, signature }) => {
+        try {
+          const snap = await getDocs(
+            query(collection(db, `places/${place.id}/reviews`), where('visibility', '==', 'shared'))
+          );
+          const hasReview = snap.docs.some((d) => d.data().ownerId === userId);
+          cache.set(place.id, { signature, hasReview });
+          if (hasReview) {
+            result.add(place.id);
+          }
+        } catch {
+          const fallback = cache.get(place.id);
+          if (fallback?.hasReview) {
+            result.add(place.id);
+          }
+        }
+      })
+    );
+  }
+
+  return result;
+}
+
 export function subscribeUserWishlistPlaces(
   userId: string,
   onData: (places: PlaceItem[]) => void,

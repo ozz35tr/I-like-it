@@ -62,10 +62,12 @@ import {
 } from './lib/placeRepository';
 import {
   countLegacyPersonalCloudPlaces,
+  findUserReviewedPlaceIds,
   importBackupToFirestore,
   migrateLegacyPersonalCloudToShared,
   migrateLegacySharedWishlistToPrivate,
   resolveSafeAuthorName,
+  type UserReviewLookupCacheEntry,
 } from './lib/placesService';
 import {
   CATEGORY_LABELS,
@@ -73,8 +75,9 @@ import {
   type PlaceItem,
   type SortDirection,
   type SortField,
-  type VisitStatus,
 } from './types/place';
+
+type ListStatusFilter = 'all' | 'visited' | 'mine' | 'wishlist' | 'hidden';
 
 function renderStars(avgRating: number) {
   const rounded = Math.round(avgRating);
@@ -137,13 +140,14 @@ export default function App() {
   const [loadingPlaces, setLoadingPlaces] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
-  const [statusFilter, setStatusFilter] = useState<'all' | VisitStatus>('all');
+  const [statusFilter, setStatusFilter] = useState<ListStatusFilter>('all');
   const [productFilter, setProductFilter] = useState<string>('all');
   const [regionFilter, setRegionFilter] = useState<string>('all');
 
   const [hiddenWishlistIds, setHiddenWishlistIds] = useState<string[]>([]);
-  const [showHiddenWishlist, setShowHiddenWishlist] = useState(false);
   const optimisticHiddenOverridesRef = useRef<Map<string, boolean>>(new Map());
+  const [myReviewedPlaceIds, setMyReviewedPlaceIds] = useState<Set<string>>(() => new Set());
+  const userReviewCacheRef = useRef<Map<string, UserReviewLookupCacheEntry>>(new Map());
 
   const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
   const [detectedUserArea, setDetectedUserArea] = useState<string | null>(null);
@@ -210,7 +214,8 @@ export default function App() {
     );
 
     optimisticHiddenOverridesRef.current.clear();
-    setShowHiddenWishlist(false);
+    userReviewCacheRef.current.clear();
+    setMyReviewedPlaceIds(new Set());
 
     if (!actor) {
       setStatusFilter('all');
@@ -262,6 +267,24 @@ export default function App() {
       unsubHidden();
     };
   }, [actor]);
+
+  useEffect(() => {
+    if (!actor) {
+      setMyReviewedPlaceIds(new Set());
+      return;
+    }
+
+    let cancelled = false;
+    void findUserReviewedPlaceIds(actor.uid, allPlaces, userReviewCacheRef.current).then((ids) => {
+      if (!cancelled) {
+        setMyReviewedPlaceIds(ids);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [actor, allPlaces]);
 
   const hiddenWishlistSet = useMemo(() => new Set(hiddenWishlistIds), [hiddenWishlistIds]);
 
@@ -380,8 +403,8 @@ export default function App() {
       setBestInAreaActive(true);
       setSortField('rating');
       setSortDir('desc');
-      if (statusFilter === 'wishlist') {
-        setStatusFilter('all');
+      if (statusFilter === 'wishlist' || statusFilter === 'hidden') {
+        setStatusFilter('visited');
       }
       const resolvedArea = detectedUserArea || (await resolveAndStoreUserArea(lat, lng));
       setNotice(
@@ -401,7 +424,7 @@ export default function App() {
       setBestInAreaActive(true);
       setSortField('rating');
       setSortDir('desc');
-      if (statusFilter === 'wishlist') setStatusFilter('all');
+      if (statusFilter === 'wishlist' || statusFilter === 'hidden') setStatusFilter('visited');
       setNotice('Konum servisi kullanılamıyor; mevcut görünümdeki en yüksek puanlı yerler sıralandı.');
       window.setTimeout(() => setNotice(null), 3500);
       return;
@@ -420,7 +443,7 @@ export default function App() {
         setBestInAreaActive(true);
         setSortField('rating');
         setSortDir('desc');
-        if (statusFilter === 'wishlist') setStatusFilter('all');
+        if (statusFilter === 'wishlist' || statusFilter === 'hidden') setStatusFilter('visited');
         setNotice(
           'Konum izni alınamadı; Bölge seçerek veya listedeki en yüksek yıldızlı yerlerden devam edebilirsiniz.'
         );
@@ -524,9 +547,19 @@ export default function App() {
   };
 
   const visitedCount = useMemo(
-    () => allPlaces.filter((p) => p.visitStatus !== 'wishlist').length,
+    () =>
+      allPlaces.filter((p) => !(p.visitStatus === 'wishlist' && p.reviewCount === 0)).length,
     [allPlaces]
   );
+
+  const mineVisitedCount = useMemo(() => {
+    if (!actor) return 0;
+    return allPlaces.filter((p) => {
+      const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
+      if (isWish) return false;
+      return p.ownerId === actor.uid || myReviewedPlaceIds.has(p.id);
+    }).length;
+  }, [allPlaces, actor, myReviewedPlaceIds]);
 
   const hiddenWishlistCount = useMemo(
     () =>
@@ -540,27 +573,32 @@ export default function App() {
     return allPlaces.filter((p) => {
       const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
       if (!isWish) return false;
-      if (!showHiddenWishlist && hiddenWishlistSet.has(p.id)) return false;
-      return true;
+      return !hiddenWishlistSet.has(p.id);
     }).length;
-  }, [allPlaces, showHiddenWishlist, hiddenWishlistSet]);
-
-  useEffect(() => {
-    if (hiddenWishlistCount === 0 && showHiddenWishlist) {
-      setShowHiddenWishlist(false);
-    }
-  }, [hiddenWishlistCount, showHiddenWishlist]);
+  }, [allPlaces, hiddenWishlistSet]);
 
   const statusScopedPlaces = useMemo(() => {
     return allPlaces.filter((p) => {
       const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
-      if (isWish && !showHiddenWishlist && hiddenWishlistSet.has(p.id)) {
-        return false;
+      const isHidden = isWish && hiddenWishlistSet.has(p.id);
+
+      switch (statusFilter) {
+        case 'all':
+          return !isHidden;
+        case 'visited':
+          return !isWish;
+        case 'mine':
+          if (isWish || !actor) return false;
+          return p.ownerId === actor.uid || myReviewedPlaceIds.has(p.id);
+        case 'wishlist':
+          return isWish && !isHidden;
+        case 'hidden':
+          return isHidden;
+        default:
+          return !isHidden;
       }
-      if (statusFilter === 'all') return true;
-      return statusFilter === 'wishlist' ? isWish : !isWish;
     });
-  }, [allPlaces, statusFilter, showHiddenWishlist, hiddenWishlistSet]);
+  }, [allPlaces, statusFilter, hiddenWishlistSet, actor, myReviewedPlaceIds]);
 
   const knownRegions = useMemo(() => {
     const map = new Map<string, string>();
@@ -1027,66 +1065,42 @@ export default function App() {
           </div>
         )}
 
-        {/* Gidilenler / Gidilecekler Sekmeleri & Gizle/Göster Kontrolü (Gidilecekler yalnızca giriş yapanlara özel) */}
+        {/* Tümü / Lezzet Noktaları / Benim (Değerlendirdiklerim) / Gidilecekler / Gizlediklerim Sekmeleri */}
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {actor ? (
-              <div className="flex flex-wrap items-center gap-2">
-                <div
-                  role="tablist"
-                  aria-label="Mekan listesi görünümü"
-                  className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full overflow-x-auto"
-                >
-                  {(
-                    [
-                      ['all', 'Tümü', visitedCount + wishlistCount],
-                      ['visited', 'Lezzet Noktaları', visitedCount],
-                      ['wishlist', 'Gidilecekler', wishlistCount],
-                    ] as const
-                  ).map(([key, label, count]) => {
-                    const active = statusFilter === key;
-                    return (
-                      <button
-                        key={key}
-                        type="button"
-                        role="tab"
-                        aria-selected={active}
-                        onClick={() => setStatusFilter(key)}
-                        className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
-                          active
-                            ? 'bg-white text-slate-900 shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        {label} ({count})
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {hiddenWishlistCount > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setShowHiddenWishlist((prev) => !prev)}
-                    className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
-                      showHiddenWishlist
-                        ? 'bg-slate-900 text-white border-slate-900'
-                        : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
-                    }`}
-                  >
-                    {showHiddenWishlist ? (
-                      <>
-                        <EyeOff className="w-3.5 h-3.5" />
-                        <span>Gizlenenleri Gizle ({hiddenWishlistCount})</span>
-                      </>
-                    ) : (
-                      <>
-                        <Eye className="w-3.5 h-3.5 text-amber-700" />
-                        <span>Gizlenenleri Göster ({hiddenWishlistCount})</span>
-                      </>
-                    )}
-                  </button>
-                )}
+              <div
+                role="tablist"
+                aria-label="Mekan listesi görünümü"
+                className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full"
+              >
+                {(
+                  [
+                    ['all', 'Tümü', visitedCount + wishlistCount],
+                    ['visited', 'Lezzet Noktaları', visitedCount],
+                    ['mine', 'Benim (Değerlendirdiklerim)', mineVisitedCount],
+                    ['wishlist', 'Gidilecekler', wishlistCount],
+                    ['hidden', 'Gizlediklerim', hiddenWishlistCount],
+                  ] as const
+                ).map(([key, label, count]) => {
+                  const active = statusFilter === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setStatusFilter(key)}
+                      className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                        active
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  );
+                })}
               </div>
             ) : (
               <div className="inline-flex flex-wrap items-center gap-2">
@@ -1094,7 +1108,7 @@ export default function App() {
                   Lezzet Noktaları ({visitedCount})
                 </span>
                 <span className="text-xs text-slate-500">
-                  Kişisel gidilecekler listeniz için giriş yapabilirsiniz
+                  Kendi değerlendirmeleriniz ve gidilecekler listeniz için giriş yapabilirsiniz
                 </span>
               </div>
             )}
@@ -1355,36 +1369,67 @@ export default function App() {
             <h1 className="text-lg sm:text-xl font-semibold text-slate-900">
               {allPlaces.length === 0
                 ? 'Gittiğiniz ve Gideceğiniz Mekanları Ekleyin'
-                : statusFilter === 'wishlist' &&
-                    hiddenWishlistCount > 0 &&
-                    !showHiddenWishlist &&
+                : statusFilter === 'mine' &&
+                    mineVisitedCount === 0 &&
                     !searchText &&
                     productFilter === 'all' &&
                     regionFilter === 'all'
-                  ? `Gizlediğiniz ${hiddenWishlistCount} Gidilecek Mekan Var`
-                  : 'Seçili Filtreye Uygun Mekan Yok'}
+                  ? 'Henüz Değerlendirdiğiniz Bir Mekan Yok'
+                  : statusFilter === 'hidden' &&
+                      hiddenWishlistCount === 0 &&
+                      !searchText &&
+                      productFilter === 'all' &&
+                      regionFilter === 'all'
+                    ? 'Gizlediğiniz Kayıt Bulunmuyor'
+                    : statusFilter === 'wishlist' &&
+                        hiddenWishlistCount > 0 &&
+                        !searchText &&
+                        productFilter === 'all' &&
+                        regionFilter === 'all'
+                      ? `Gizlediğiniz ${hiddenWishlistCount} Gidilecek Mekan Var`
+                      : 'Seçili Filtreye Uygun Mekan Yok'}
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {allPlaces.length === 0
                 ? 'İster gittiğiniz restoran ve lokantaları puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gidilecekler listenize ekleyin.'
-                : statusFilter === 'wishlist' &&
-                    hiddenWishlistCount > 0 &&
-                    !showHiddenWishlist &&
+                : statusFilter === 'mine' &&
+                    mineVisitedCount === 0 &&
                     !searchText &&
                     productFilter === 'all' &&
                     regionFilter === 'all'
-                  ? 'Gidilecekler listenizdeki kayıtları kendi görünümünüzde gizlediniz. İstediğiniz zaman tekrar gösterebilirsiniz.'
-                  : 'Farklı bir ürün çeşidi, bölge veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
+                  ? 'Yeni bir lezzet noktası ekleyebilir veya topluluktaki mevcut mekanlara yorum ve puan bırakarak kendi listenizi oluşturabilirsiniz.'
+                  : statusFilter === 'hidden' &&
+                      hiddenWishlistCount === 0 &&
+                      !searchText &&
+                      productFilter === 'all' &&
+                      regionFilter === 'all'
+                    ? 'Gidilecekler listenizden gizlediğiniz mekanlar burada listelenir.'
+                    : statusFilter === 'wishlist' &&
+                        hiddenWishlistCount > 0 &&
+                        !searchText &&
+                        productFilter === 'all' &&
+                        regionFilter === 'all'
+                      ? 'Gidilecekler listenizdeki kayıtlarınız şu anda Gizlediklerim sekmesinde tutuluyor.'
+                      : 'Farklı bir ürün çeşidi, bölge veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
             </p>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
-              {hiddenWishlistCount > 0 && !showHiddenWishlist && statusFilter !== 'visited' && (
+              {actor && hiddenWishlistCount > 0 && statusFilter === 'wishlist' && (
                 <button
                   type="button"
-                  onClick={() => setShowHiddenWishlist(true)}
+                  onClick={() => setStatusFilter('hidden')}
                   className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs sm:text-sm font-semibold hover:bg-amber-100 transition-colors"
                 >
                   <Eye className="w-4 h-4 text-amber-700" />
-                  <span>Gizlenenleri Göster ({hiddenWishlistCount})</span>
+                  <span>Gizlediklerim&apos;e Git ({hiddenWishlistCount})</span>
+                </button>
+              )}
+              {actor && statusFilter === 'hidden' && (
+                <button
+                  type="button"
+                  onClick={() => setStatusFilter('wishlist')}
+                  className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs sm:text-sm font-semibold hover:bg-slate-50 transition-colors"
+                >
+                  <span>Gidilecekler&apos;e Dön</span>
                 </button>
               )}
               <button
@@ -1547,6 +1592,14 @@ export default function App() {
                                   <p className="text-[11px] text-slate-400 truncate max-w-[190px]">
                                     Ekleyen: {place.authorName}
                                     {actor && place.ownerId === actor.uid ? ' (Siz)' : ''}
+                                    {actor &&
+                                      place.ownerId !== actor.uid &&
+                                      myReviewedPlaceIds.has(place.id) && (
+                                        <span className="text-emerald-700 font-medium">
+                                          {' '}
+                                          · Değerlendirdiniz
+                                        </span>
+                                      )}
                                   </p>
                                 </div>
                               </div>
@@ -1798,6 +1851,14 @@ export default function App() {
                             <p className="text-[11px] text-slate-400 truncate">
                               Ekleyen: {place.authorName}
                               {actor && place.ownerId === actor.uid ? ' (Siz)' : ''}
+                              {actor &&
+                                place.ownerId !== actor.uid &&
+                                myReviewedPlaceIds.has(place.id) && (
+                                  <span className="text-emerald-700 font-medium">
+                                    {' '}
+                                    · Değerlendirdiniz
+                                  </span>
+                                )}
                             </p>
                           </div>
                         </button>
@@ -1911,7 +1972,11 @@ export default function App() {
       {showAddModal && (
         <AddPlaceModal
           actor={actor}
-          defaultVisitStatus={actor && statusFilter === 'wishlist' ? 'wishlist' : 'visited'}
+          defaultVisitStatus={
+            actor && (statusFilter === 'wishlist' || statusFilter === 'hidden')
+              ? 'wishlist'
+              : 'visited'
+          }
           knownRegions={knownRegions}
           onRequestSignIn={() => void handleSignIn()}
           onClose={() => setShowAddModal(false)}
@@ -1919,8 +1984,15 @@ export default function App() {
             setShowAddModal(false);
             if (actor && createdStatus === 'wishlist' && hideInWishlist) {
               void handleToggleHiddenWishlist(createdId, true);
+              setStatusFilter('hidden');
+              return;
             }
-            if (actor && statusFilter !== 'all' && statusFilter !== createdStatus) {
+            if (
+              actor &&
+              statusFilter !== 'all' &&
+              !(statusFilter === 'mine' && createdStatus === 'visited') &&
+              statusFilter !== createdStatus
+            ) {
               setStatusFilter(createdStatus);
             }
           }}
