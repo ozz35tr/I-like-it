@@ -1065,7 +1065,7 @@ export default function App() {
           </div>
         )}
 
-        {/* Tümü / Lezzet Noktaları / Benim (Değerlendirdiklerim) / Gidilecekler / Gizlediklerim Sekmeleri */}
+        {/* Tümü / Lezzet Noktaları / Gittiklerim / Gidilecekler / Gizlediklerim Sekmeleri */}
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {actor ? (
@@ -1078,7 +1078,7 @@ export default function App() {
                   [
                     ['all', 'Tümü', visitedCount + wishlistCount],
                     ['visited', 'Lezzet Noktaları', visitedCount],
-                    ['mine', 'Benim (Değerlendirdiklerim)', mineVisitedCount],
+                    ['mine', 'Gittiklerim', mineVisitedCount],
                     ['wishlist', 'Gidilecekler', wishlistCount],
                     ['hidden', 'Gizlediklerim', hiddenWishlistCount],
                   ] as const
