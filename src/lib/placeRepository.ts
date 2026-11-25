@@ -6,10 +6,14 @@ import {
   deleteLocalReviewFromPlace,
   exportDatabaseBackup,
   importBackupToLocal,
+  readLocalHiddenWishlistIds,
+  subscribeLocalHiddenWishlistIds,
   subscribeLocalPlaceReviews,
   subscribeLocalPlaces,
-  updateLocalPlaceCuisineType,
   updateLocalPlaceMapsUrl,
+  updateLocalPlaceTagsAndLocation,
+  updateLocalReviewInPlace,
+  writeLocalHiddenWishlistIds,
 } from './localDb';
 import {
   addReviewToPlace,
@@ -18,12 +22,17 @@ import {
   deleteReviewFromPlace,
   exportFirestoreBackup,
   importBackupToFirestore,
+  subscribeFirestoreHiddenWishlistIds,
   subscribePlaceReviews,
   subscribePlaces,
-  updatePlaceCuisineType,
+  toggleFirestoreWishlistPlaceHidden,
   updatePlaceMapsUrl,
+  updatePlaceTagsAndLocation,
+  updateReviewInPlace,
   type AddReviewInput,
   type CreatePlaceInput,
+  type UpdatePlaceTagsAndLocationInput,
+  type UpdateReviewInput,
 } from './placesService';
 
 export interface CloudActor {
@@ -54,6 +63,37 @@ export function subscribeUserOrLocalPlaceReviews(
   return subscribeLocalPlaceReviews(placeId, onData, onError);
 }
 
+export function subscribeHiddenWishlistIds(
+  actor: CloudActor | null | undefined,
+  onData: (ids: string[]) => void,
+  onError?: (error: Error) => void
+): () => void {
+  if (actor) {
+    return subscribeFirestoreHiddenWishlistIds(actor.uid, onData, onError);
+  }
+  return subscribeLocalHiddenWishlistIds(onData);
+}
+
+export async function toggleWishlistPlaceHidden(
+  actor: CloudActor | null | undefined,
+  placeId: string,
+  hide: boolean
+): Promise<string[]> {
+  if (actor) {
+    return toggleFirestoreWishlistPlaceHidden(actor.uid, placeId, hide);
+  }
+  const current = readLocalHiddenWishlistIds();
+  const nextIds = hide
+    ? Array.from(new Set([...current, placeId])).slice(0, 500)
+    : current.filter((id) => id !== placeId);
+  writeLocalHiddenWishlistIds(nextIds);
+  return nextIds;
+}
+
+export function readCurrentLocalHiddenIds(): string[] {
+  return readLocalHiddenWishlistIds();
+}
+
 export async function createPlace(
   actor: CloudActor | null | undefined,
   input: CreatePlaceInput
@@ -75,15 +115,15 @@ export async function updateMapsUrl(
   return updateLocalPlaceMapsUrl(placeId, mapsUrl);
 }
 
-export async function updateCuisineType(
+export async function updatePlaceMetadata(
   actor: CloudActor | null | undefined,
   placeId: string,
-  cuisineType: string
+  input: UpdatePlaceTagsAndLocationInput
 ): Promise<void> {
   if (actor) {
-    return updatePlaceCuisineType(placeId, cuisineType);
+    return updatePlaceTagsAndLocation(placeId, input);
   }
-  return updateLocalPlaceCuisineType(placeId, cuisineType);
+  return updateLocalPlaceTagsAndLocation(placeId, input);
 }
 
 export async function addReview(
@@ -94,6 +134,16 @@ export async function addReview(
     return addReviewToPlace(actor.uid, actor.authorName, input);
   }
   return addLocalReviewToPlace(input);
+}
+
+export async function updateReview(
+  actor: CloudActor | null | undefined,
+  input: UpdateReviewInput
+): Promise<void> {
+  if (actor) {
+    return updateReviewInPlace(input);
+  }
+  return updateLocalReviewInPlace(input);
 }
 
 export async function deleteReview(

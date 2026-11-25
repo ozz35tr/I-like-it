@@ -30,6 +30,21 @@ service cloud.firestore {
       return isVerifiedSignedIn() && request.auth.uid == userId;
     }
 
+    function isValidCuisineTag(tag) {
+      return tag is string && tag.size() >= 1 && tag.size() <= 40;
+    }
+
+    function isValidCuisineTypesList(listVal) {
+      return listVal is list &&
+        listVal.size() <= 6 &&
+        (listVal.size() < 1 || isValidCuisineTag(listVal[0])) &&
+        (listVal.size() < 2 || isValidCuisineTag(listVal[1])) &&
+        (listVal.size() < 3 || isValidCuisineTag(listVal[2])) &&
+        (listVal.size() < 4 || isValidCuisineTag(listVal[3])) &&
+        (listVal.size() < 5 || isValidCuisineTag(listVal[4])) &&
+        (listVal.size() < 6 || isValidCuisineTag(listVal[5]));
+    }
+
     function isValidSharedPlace(data) {
       return data.keys().hasAll([
           'ownerId',
@@ -54,12 +69,19 @@ service cloud.firestore {
           'category',
           'visitStatus',
           'cuisineType',
+          'cuisineTypes',
+          'locationArea',
+          'lat',
+          'lng',
           'mapsUrl',
           'coverImage',
           'latestComment',
           'avgRating',
           'reviewCount',
           'ratingSum',
+          'avgPriceRating',
+          'priceRatingCount',
+          'priceRatingSum',
           'createdAt',
           'updatedAt'
         ]) &&
@@ -72,9 +94,13 @@ service cloud.firestore {
         data.name is string &&
         data.name.size() >= 2 &&
         data.name.size() <= 100 &&
-        data.category in ['restaurant', 'cafe', 'bakery', 'bistro'] &&
+        data.category in ['restaurant', 'esnaf', 'cafe', 'bakery', 'bistro', 'bufe', 'bar', 'pastane'] &&
         (!('visitStatus' in data) || data.visitStatus in ['visited', 'wishlist']) &&
-        (!('cuisineType' in data) || (data.cuisineType is string && data.cuisineType.size() <= 40)) &&
+        (!('cuisineType' in data) || (data.cuisineType is string && data.cuisineType.size() <= 160)) &&
+        (!('cuisineTypes' in data) || isValidCuisineTypesList(data.cuisineTypes)) &&
+        (!('locationArea' in data) || (data.locationArea is string && data.locationArea.size() <= 80)) &&
+        (!('lat' in data) || data.lat == null || (data.lat is number && data.lat >= -90 && data.lat <= 90)) &&
+        (!('lng' in data) || data.lng == null || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
         data.mapsUrl is string &&
         data.mapsUrl.size() <= 600 &&
         data.coverImage is string &&
@@ -90,6 +116,9 @@ service cloud.firestore {
         data.ratingSum is number &&
         data.ratingSum >= 0 &&
         data.ratingSum <= 50000 &&
+        (!('avgPriceRating' in data) || (data.avgPriceRating is number && data.avgPriceRating >= 0 && data.avgPriceRating <= 5)) &&
+        (!('priceRatingCount' in data) || (data.priceRatingCount is number && data.priceRatingCount >= 0 && data.priceRatingCount <= 10000)) &&
+        (!('priceRatingSum' in data) || (data.priceRatingSum is number && data.priceRatingSum >= 0 && data.priceRatingSum <= 50000)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
     }
@@ -112,6 +141,7 @@ service cloud.firestore {
           'visibility',
           'placeId',
           'rating',
+          'priceRating',
           'comment',
           'photos',
           'createdAt',
@@ -130,6 +160,7 @@ service cloud.firestore {
         data.rating is number &&
         data.rating >= 1 &&
         data.rating <= 5 &&
+        (!('priceRating' in data) || (data.priceRating is number && data.priceRating >= 1 && data.priceRating <= 5)) &&
         data.comment is string &&
         data.comment.size() >= 2 &&
         data.comment.size() <= 1500 &&
@@ -138,6 +169,18 @@ service cloud.firestore {
         (data.photos.size() == 0 || (data.photos[0] is string && data.photos[0].size() <= 160000)) &&
         (data.photos.size() < 2 || (data.photos[1] is string && data.photos[1].size() <= 160000)) &&
         data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUserPreference(data, userId) {
+      return data.keys().hasAll(['ownerId', 'hiddenPlaceIds', 'updatedAt']) &&
+        data.keys().hasOnly(['ownerId', 'hiddenPlaceIds', 'updatedAt']) &&
+        data.ownerId is string &&
+        isValidId(data.ownerId) &&
+        data.ownerId == userId &&
+        data.hiddenPlaceIds is list &&
+        data.hiddenPlaceIds.size() <= 500 &&
+        (data.hiddenPlaceIds.size() == 0 || isValidId(data.hiddenPlaceIds[0])) &&
         data.updatedAt is timestamp;
     }
 
@@ -168,9 +211,26 @@ service cloud.firestore {
           (
             existing().ownerId == request.auth.uid &&
             incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'category',
               'mapsUrl',
               'cuisineType',
+              'cuisineTypes',
+              'locationArea',
+              'lat',
+              'lng',
               'visitStatus',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'category',
+              'cuisineType',
+              'cuisineTypes',
+              'locationArea',
+              'lat',
+              'lng',
               'updatedAt'
             ])
           ) ||
@@ -179,6 +239,9 @@ service cloud.firestore {
               'avgRating',
               'reviewCount',
               'ratingSum',
+              'avgPriceRating',
+              'priceRatingCount',
+              'priceRatingSum',
               'latestComment',
               'coverImage',
               'visitStatus',
@@ -209,13 +272,64 @@ service cloud.firestore {
           incoming().updatedAt == request.time &&
           getAfter(/databases/$(database)/documents/places/$(placeId)).data.visibility == 'shared';
 
-        allow update: if false;
+        allow update: if isValidId(placeId) &&
+          isValidId(reviewId) &&
+          isVerifiedSignedIn() &&
+          existing().ownerId == request.auth.uid &&
+          isValidSharedReview(incoming(), placeId) &&
+          incoming().ownerId == existing().ownerId &&
+          incoming().authorName == existing().authorName &&
+          incoming().placeId == existing().placeId &&
+          incoming().createdAt == existing().createdAt &&
+          incoming().updatedAt == request.time &&
+          incoming().diff(existing()).affectedKeys().hasOnly([
+            'rating',
+            'priceRating',
+            'comment',
+            'photos',
+            'updatedAt'
+          ]) &&
+          getAfter(/databases/$(database)/documents/places/$(placeId)).data.visibility == 'shared';
 
         allow delete: if isValidId(placeId) &&
           isValidId(reviewId) &&
           isVerifiedSignedIn() &&
           existing().ownerId == request.auth.uid;
       }
+    }
+
+    // Per-User Private Preferences (Wishlist hide/show sync)
+    match /users/{userId}/preferences/{prefId} {
+      allow get: if isValidId(userId) &&
+        isValidId(prefId) &&
+        isVerifiedOwner(userId) &&
+        (resource == null || existing().ownerId == request.auth.uid);
+
+      allow list: if isValidId(userId) &&
+        isVerifiedOwner(userId) &&
+        resource.data.ownerId == request.auth.uid;
+
+      allow create: if isValidId(userId) &&
+        isValidId(prefId) &&
+        isVerifiedOwner(userId) &&
+        isValidUserPreference(incoming(), userId) &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isValidId(prefId) &&
+        isVerifiedOwner(userId) &&
+        isValidUserPreference(incoming(), userId) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'hiddenPlaceIds',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(userId) &&
+        isValidId(prefId) &&
+        isVerifiedOwner(userId) &&
+        existing().ownerId == request.auth.uid;
     }
 
     // Legacy Per-User Private Places (retained for one-click migration to shared list)

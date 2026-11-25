@@ -12,12 +12,17 @@ import {
   ArrowDown,
   ArrowUp,
   ArrowUpDown,
+  BadgeTurkishLira,
   CloudUpload,
   Download,
   ExternalLink,
+  Eye,
+  EyeOff,
   Image as ImageIcon,
   Loader2,
   LogOut,
+  MapPin,
+  Navigation,
   Plus,
   Search,
   Star,
@@ -26,20 +31,32 @@ import {
   Users,
 } from 'lucide-react';
 import { AddPlaceModal } from './components/AddPlaceModal';
+import { GourmandLogo } from './components/GourmandLogo';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlaceDetailSheet } from './components/PlaceDetailSheet';
+import { PriceRatingDisplay } from './components/PriceRating';
 import { PWAInstallButton } from './components/PWAInstallButton';
-import { auth, googleProvider } from './lib/firebase';
+import { auth, formatFriendlyFirestoreError, googleProvider } from './lib/firebase';
 import {
   clearLegacyLocalDatabase,
   exportDatabaseBackup as exportLocalBackup,
   listPlaces as listLocalIndexedDbPlaces,
 } from './lib/localDb';
 import {
+  formatDistanceLabel,
+  haversineDistanceKm,
+  matchesDetectedArea,
+  matchesMultiWordQuery,
+  normalizeTurkishSearchText,
+  reverseGeocodeArea,
+} from './lib/mapsLink';
+import {
   exportBackup,
   importBackup,
   removePlace,
+  subscribeHiddenWishlistIds,
   subscribeUserOrLocalPlaces,
+  toggleWishlistPlaceHidden,
   type CloudActor,
 } from './lib/placeRepository';
 import {
@@ -120,6 +137,17 @@ export default function App() {
   const [searchText, setSearchText] = useState('');
   const [statusFilter, setStatusFilter] = useState<'all' | VisitStatus>('all');
   const [productFilter, setProductFilter] = useState<string>('all');
+  const [regionFilter, setRegionFilter] = useState<string>('all');
+
+  const [hiddenWishlistIds, setHiddenWishlistIds] = useState<string[]>([]);
+  const [showHiddenWishlist, setShowHiddenWishlist] = useState(false);
+  const optimisticHiddenOverridesRef = useRef<Map<string, boolean>>(new Map());
+
+  const [userCoords, setUserCoords] = useState<{ lat: number; lng: number } | null>(null);
+  const [detectedUserArea, setDetectedUserArea] = useState<string | null>(null);
+  const [locatingUser, setLocatingUser] = useState(false);
+  const [bestInAreaActive, setBestInAreaActive] = useState(false);
+  const [locatingBestInArea, setLocatingBestInArea] = useState(false);
 
   const [sortField, setSortField] = useState<SortField>('date');
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
@@ -161,7 +189,7 @@ export default function App() {
     setLoadingPlaces(true);
     setSyncError(null);
 
-    const unsub = subscribeUserOrLocalPlaces(
+    const unsubPlaces = subscribeUserOrLocalPlaces(
       actor,
       (places) => {
         setAllPlaces(places);
@@ -176,6 +204,26 @@ export default function App() {
         } else {
           setSyncError('Veriler yüklenirken bir hata oluştu.');
         }
+      }
+    );
+
+    optimisticHiddenOverridesRef.current.clear();
+    setShowHiddenWishlist(false);
+
+    const unsubHidden = subscribeHiddenWishlistIds(
+      actor,
+      (serverIds) => {
+        const merged = new Set(serverIds);
+        optimisticHiddenOverridesRef.current.forEach((shouldHide, placeId) => {
+          if (shouldHide) merged.add(placeId);
+          else merged.delete(placeId);
+        });
+        setHiddenWishlistIds(Array.from(merged));
+      },
+      (err) => {
+        setNotice(
+          formatFriendlyFirestoreError(err, 'Gizlenen gidilecekler tercihiniz yüklenemedi.')
+        );
       }
     );
 
@@ -200,13 +248,178 @@ export default function App() {
       setLegacyCloudCount(0);
     }
 
-    return () => unsub();
+    return () => {
+      unsubPlaces();
+      unsubHidden();
+    };
   }, [actor]);
+
+  const hiddenWishlistSet = useMemo(() => new Set(hiddenWishlistIds), [hiddenWishlistIds]);
 
   const liveDetailPlace = useMemo(() => {
     if (!detailPlace) return null;
     return allPlaces.find((p) => p.id === detailPlace.id) || null;
   }, [allPlaces, detailPlace]);
+
+  const handleToggleHiddenWishlist = async (placeId: string, hide: boolean) => {
+    optimisticHiddenOverridesRef.current.set(placeId, hide);
+    setHiddenWishlistIds((prev) => {
+      const next = new Set(prev);
+      if (hide) next.add(placeId);
+      else next.delete(placeId);
+      return Array.from(next);
+    });
+
+    try {
+      const committedIds = await toggleWishlistPlaceHidden(actor, placeId, hide);
+      if (optimisticHiddenOverridesRef.current.get(placeId) === hide) {
+        optimisticHiddenOverridesRef.current.delete(placeId);
+      }
+      const merged = new Set(committedIds);
+      optimisticHiddenOverridesRef.current.forEach((shouldHide, pendingId) => {
+        if (shouldHide) merged.add(pendingId);
+        else merged.delete(pendingId);
+      });
+      setHiddenWishlistIds(Array.from(merged));
+      setNotice(
+        hide
+          ? 'Kayıt yalnızca sizin gidilecekler listenizde gizlendi.'
+          : 'Kayıt tekrar gidilecekler listenizde gösteriliyor.'
+      );
+      window.setTimeout(() => setNotice(null), 2600);
+    } catch (err) {
+      if (optimisticHiddenOverridesRef.current.get(placeId) === hide) {
+        optimisticHiddenOverridesRef.current.delete(placeId);
+      }
+      setHiddenWishlistIds((prev) => {
+        const reverted = new Set(prev);
+        if (hide) reverted.delete(placeId);
+        else reverted.add(placeId);
+        return Array.from(reverted);
+      });
+      setNotice(formatFriendlyFirestoreError(err, 'Gizleme tercihi kaydedilemedi.'));
+      window.setTimeout(() => setNotice(null), 3500);
+    }
+  };
+
+  const resolveAndStoreUserArea = async (lat: number, lng: number): Promise<string> => {
+    const area = await reverseGeocodeArea(lat, lng);
+    if (area) {
+      setDetectedUserArea(area);
+      return area;
+    }
+    return '';
+  };
+
+  const handleToggleNearMe = () => {
+    if (userCoords && !bestInAreaActive) {
+      setUserCoords(null);
+      setDetectedUserArea(null);
+      if (sortField === 'distance') {
+        setSortField('date');
+        setSortDir('desc');
+      }
+      return;
+    }
+
+    if (userCoords && bestInAreaActive) {
+      setBestInAreaActive(false);
+      setSortField('distance');
+      setSortDir('asc');
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setNotice('Tarayıcınız konum servisini desteklemiyor; arama kutusuna semt/ilçe yazabilirsiniz.');
+      window.setTimeout(() => setNotice(null), 3500);
+      return;
+    }
+
+    setLocatingUser(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setUserCoords({ lat: latitude, lng: longitude });
+        setBestInAreaActive(false);
+        setSortField('distance');
+        setSortDir('asc');
+        setLocatingUser(false);
+        void resolveAndStoreUserArea(latitude, longitude);
+        setNotice('Konumunuz alındı; koordinatlı mekanlar yakınlığa göre sıralandı.');
+        window.setTimeout(() => setNotice(null), 3000);
+      },
+      () => {
+        setLocatingUser(false);
+        setNotice('Konum izni alınamadı. Arama kutusuna veya Bölge filtresine semt/ilçe yazabilirsiniz.');
+        window.setTimeout(() => setNotice(null), 3500);
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+    );
+  };
+
+  const handleToggleBestInArea = () => {
+    if (bestInAreaActive) {
+      setBestInAreaActive(false);
+      if (sortField === 'rating') {
+        setSortField(userCoords ? 'distance' : 'date');
+        setSortDir(userCoords ? 'asc' : 'desc');
+      }
+      return;
+    }
+
+    const activateWithCoords = async (lat: number, lng: number) => {
+      setBestInAreaActive(true);
+      setSortField('rating');
+      setSortDir('desc');
+      if (statusFilter === 'wishlist') {
+        setStatusFilter('all');
+      }
+      const resolvedArea = detectedUserArea || (await resolveAndStoreUserArea(lat, lng));
+      setNotice(
+        resolvedArea
+          ? `${resolvedArea} bölgesindeki en yüksek yıldızlı mekanlar gösteriliyor.`
+          : 'Konumunuzdaki en yüksek yıldızlı mekanlar gösteriliyor.'
+      );
+      window.setTimeout(() => setNotice(null), 3200);
+    };
+
+    if (userCoords) {
+      void activateWithCoords(userCoords.lat, userCoords.lng);
+      return;
+    }
+
+    if (typeof navigator === 'undefined' || !navigator.geolocation) {
+      setBestInAreaActive(true);
+      setSortField('rating');
+      setSortDir('desc');
+      if (statusFilter === 'wishlist') setStatusFilter('all');
+      setNotice('Konum servisi kullanılamıyor; mevcut görünümdeki en yüksek puanlı yerler sıralandı.');
+      window.setTimeout(() => setNotice(null), 3500);
+      return;
+    }
+
+    setLocatingBestInArea(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        const { latitude, longitude } = pos.coords;
+        setUserCoords({ lat: latitude, lng: longitude });
+        setLocatingBestInArea(false);
+        void activateWithCoords(latitude, longitude);
+      },
+      () => {
+        setLocatingBestInArea(false);
+        setBestInAreaActive(true);
+        setSortField('rating');
+        setSortDir('desc');
+        if (statusFilter === 'wishlist') setStatusFilter('all');
+        setNotice(
+          'Konum izni alınamadı; Bölge seçerek veya listedeki en yüksek yıldızlı yerlerden devam edebilirsiniz.'
+        );
+        window.setTimeout(() => setNotice(null), 3500);
+      },
+      { enableHighAccuracy: false, timeout: 8000, maximumAge: 60000 }
+    );
+  };
 
   const handleSignIn = async () => {
     if (isInAppBrowser()) {
@@ -286,7 +499,7 @@ export default function App() {
       setSortDir((prev) => (prev === 'asc' ? 'desc' : 'asc'));
     } else {
       setSortField(field);
-      setSortDir(field === 'rating' || field === 'date' ? 'desc' : 'asc');
+      setSortDir(field === 'rating' || field === 'price' || field === 'date' ? 'desc' : 'asc');
     }
   };
 
@@ -306,34 +519,73 @@ export default function App() {
     [allPlaces]
   );
 
-  const wishlistCount = useMemo(
-    () => allPlaces.filter((p) => p.visitStatus === 'wishlist').length,
-    [allPlaces]
+  const hiddenWishlistCount = useMemo(
+    () =>
+      allPlaces.filter(
+        (p) => p.visitStatus === 'wishlist' && p.reviewCount === 0 && hiddenWishlistSet.has(p.id)
+      ).length,
+    [allPlaces, hiddenWishlistSet]
   );
 
+  const wishlistCount = useMemo(() => {
+    return allPlaces.filter((p) => {
+      const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
+      if (!isWish) return false;
+      if (!showHiddenWishlist && hiddenWishlistSet.has(p.id)) return false;
+      return true;
+    }).length;
+  }, [allPlaces, showHiddenWishlist, hiddenWishlistSet]);
+
+  useEffect(() => {
+    if (hiddenWishlistCount === 0 && showHiddenWishlist) {
+      setShowHiddenWishlist(false);
+    }
+  }, [hiddenWishlistCount, showHiddenWishlist]);
+
   const statusScopedPlaces = useMemo(() => {
-    if (statusFilter === 'all') return allPlaces;
-    return allPlaces.filter((p) =>
-      statusFilter === 'wishlist' ? p.visitStatus === 'wishlist' : p.visitStatus !== 'wishlist'
-    );
-  }, [allPlaces, statusFilter]);
+    return allPlaces.filter((p) => {
+      const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
+      if (isWish && !showHiddenWishlist && hiddenWishlistSet.has(p.id)) {
+        return false;
+      }
+      if (statusFilter === 'all') return true;
+      return statusFilter === 'wishlist' ? isWish : !isWish;
+    });
+  }, [allPlaces, statusFilter, showHiddenWishlist, hiddenWishlistSet]);
+
+  const knownRegions = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const p of allPlaces) {
+      const area = (p.locationArea || '').trim();
+      if (!area) continue;
+      const key = normalizeTurkishSearchText(area);
+      if (!map.has(key)) map.set(key, area);
+    }
+    return Array.from(map.values()).sort((a, b) => a.localeCompare(b, 'tr'));
+  }, [allPlaces]);
 
   const productFilterOptions = useMemo(() => {
     const counts = new Map<string, { label: string; count: number }>();
 
     for (const preset of PRODUCT_TYPE_PRESETS) {
-      counts.set(preset.toLowerCase(), { label: preset, count: 0 });
+      counts.set(normalizeTurkishSearchText(preset), { label: preset, count: 0 });
     }
 
     for (const p of statusScopedPlaces) {
-      const tag = (p.cuisineType || '').trim();
-      if (!tag) continue;
-      const key = tag.toLowerCase();
-      const existing = counts.get(key);
-      if (existing) {
-        existing.count += 1;
-      } else {
-        counts.set(key, { label: tag, count: 1 });
+      if (regionFilter !== 'all') {
+        const areaKey = normalizeTurkishSearchText(p.locationArea || '');
+        if (!areaKey.includes(regionFilter)) continue;
+      }
+      for (const tag of p.cuisineTypes) {
+        const clean = tag.trim();
+        if (!clean) continue;
+        const key = normalizeTurkishSearchText(clean);
+        const existing = counts.get(key);
+        if (existing) {
+          existing.count += 1;
+        } else {
+          counts.set(key, { label: clean, count: 1 });
+        }
       }
     }
 
@@ -345,28 +597,192 @@ export default function App() {
         if (b.count !== a.count) return b.count - a.count;
         return a.label.localeCompare(b.label, 'tr');
       });
-  }, [statusScopedPlaces]);
+  }, [statusScopedPlaces, regionFilter]);
 
-  const sortedAndFilteredPlaces = useMemo(() => {
-    const q = searchText.trim().toLowerCase();
+  const regionFilterOptions = useMemo(() => {
+    const counts = new Map<string, { label: string; count: number }>();
+
+    for (const p of statusScopedPlaces) {
+      if (productFilter !== 'all') {
+        const hasProduct = p.cuisineTypes.some(
+          (t) => normalizeTurkishSearchText(t) === productFilter
+        );
+        if (!hasProduct) continue;
+      }
+      const area = (p.locationArea || '').trim();
+      if (!area) continue;
+      const key = normalizeTurkishSearchText(area);
+      const existing = counts.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        counts.set(key, { label: area, count: 1 });
+      }
+    }
+
+    return Array.from(counts.entries())
+      .map(([key, info]) => ({ key, ...info }))
+      .sort((a, b) => b.count - a.count || a.label.localeCompare(b.label, 'tr'));
+  }, [statusScopedPlaces, productFilter]);
+
+  // Bidirectional intelligence: detect active product or region from explicit filter OR search query
+  const inferredSearchProduct = useMemo(() => {
+    if (productFilter !== 'all') {
+      return productFilterOptions.find((o) => o.key === productFilter) || null;
+    }
+    const qNorm = normalizeTurkishSearchText(searchText);
+    if (!qNorm || qNorm.length < 3) return null;
+    const matched = productFilterOptions.find(
+      (o) => o.key === qNorm || (o.key.includes(qNorm) && qNorm.length >= 4)
+    );
+    return matched || null;
+  }, [productFilter, productFilterOptions, searchText]);
+
+  const inferredSearchRegion = useMemo(() => {
+    if (regionFilter !== 'all') {
+      return regionFilterOptions.find((o) => o.key === regionFilter) || null;
+    }
+    const qNorm = normalizeTurkishSearchText(searchText);
+    if (!qNorm || qNorm.length < 3) return null;
+    const matched = regionFilterOptions.find(
+      (o) => o.key === qNorm || o.key.includes(qNorm)
+    );
+    return matched || null;
+  }, [regionFilter, regionFilterOptions, searchText]);
+
+  const regionsForActiveProduct = useMemo(() => {
+    if (!inferredSearchProduct) return [];
+    const targetKey = inferredSearchProduct.key;
+    const map = new Map<string, { key: string; label: string; count: number }>();
+
+    for (const p of statusScopedPlaces) {
+      const matchesProd = p.cuisineTypes.some(
+        (t) => normalizeTurkishSearchText(t) === targetKey
+      );
+      if (!matchesProd) continue;
+      const area = (p.locationArea || '').trim();
+      if (!area) continue;
+      const key = normalizeTurkishSearchText(area);
+      const existing = map.get(key);
+      if (existing) {
+        existing.count += 1;
+      } else {
+        map.set(key, { key, label: area, count: 1 });
+      }
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => b.count - a.count || a.label.localeCompare(b.label, 'tr')
+    );
+  }, [inferredSearchProduct, statusScopedPlaces]);
+
+  const productsInActiveRegion = useMemo(() => {
+    if (!inferredSearchRegion) return [];
+    const targetRegionKey = inferredSearchRegion.key;
+    const map = new Map<string, { key: string; label: string; count: number }>();
+
+    for (const p of statusScopedPlaces) {
+      const areaKey = normalizeTurkishSearchText(p.locationArea || '');
+      if (!areaKey.includes(targetRegionKey)) continue;
+      for (const tag of p.cuisineTypes) {
+        const clean = tag.trim();
+        if (!clean) continue;
+        const key = normalizeTurkishSearchText(clean);
+        const existing = map.get(key);
+        if (existing) {
+          existing.count += 1;
+        } else {
+          map.set(key, { key, label: clean, count: 1 });
+        }
+      }
+    }
+    return Array.from(map.values()).sort(
+      (a, b) => b.count - a.count || a.label.localeCompare(b.label, 'tr')
+    );
+  }, [inferredSearchRegion, statusScopedPlaces]);
+
+  const effectiveDetectedArea = useMemo(() => {
+    if (detectedUserArea && detectedUserArea.trim()) return detectedUserArea.trim();
+    if (!userCoords) return null;
+
+    let nearestArea = '';
+    let nearestDist = Infinity;
+    for (const p of allPlaces) {
+      if (p.lat === null || p.lng === null || !p.locationArea.trim()) continue;
+      const dist = haversineDistanceKm(userCoords.lat, userCoords.lng, p.lat, p.lng);
+      if (dist <= 12 && dist < nearestDist) {
+        nearestDist = dist;
+        nearestArea = p.locationArea.split(',')[0]?.trim() || p.locationArea.trim();
+      }
+    }
+    return nearestArea || null;
+  }, [detectedUserArea, userCoords, allPlaces]);
+
+  const bestInAreaResult = useMemo(() => {
     const filtered = statusScopedPlaces.filter((p) => {
       if (productFilter !== 'all') {
-        const tag = (p.cuisineType || '').trim().toLowerCase();
-        if (tag !== productFilter) return false;
+        const hasProduct = p.cuisineTypes.some(
+          (t) => normalizeTurkishSearchText(t) === productFilter
+        );
+        if (!hasProduct) return false;
       }
-      if (!q) return true;
-      return (
-        p.name.toLowerCase().includes(q) ||
-        (p.cuisineType || '').toLowerCase().includes(q) ||
-        (p.latestComment || '').toLowerCase().includes(q) ||
-        (p.authorName || '').toLowerCase().includes(q) ||
-        CATEGORY_LABELS[p.category].toLowerCase().includes(q)
+      if (regionFilter !== 'all') {
+        const areaKey = normalizeTurkishSearchText(p.locationArea || '');
+        if (!areaKey.includes(regionFilter)) return false;
+      }
+      return matchesMultiWordQuery(
+        [
+          p.name,
+          p.locationArea,
+          p.cuisineType,
+          ...p.cuisineTypes,
+          p.latestComment,
+          p.authorName,
+          CATEGORY_LABELS[p.category],
+          p.mapsUrl,
+        ],
+        searchText
       );
     });
 
+    const withDistance = filtered.map((place) => ({
+      place,
+      distanceKm:
+        userCoords && place.lat !== null && place.lng !== null
+          ? haversineDistanceKm(userCoords.lat, userCoords.lng, place.lat, place.lng)
+          : null,
+    }));
+
+    let workingList = withDistance;
+    let usedAreaScope = false;
+    let usedGlobalFallback = false;
+
+    if (bestInAreaActive && regionFilter === 'all' && userCoords) {
+      const inRegion = withDistance.filter(
+        (item) =>
+          (item.distanceKm !== null && item.distanceKm <= 12) ||
+          matchesDetectedArea(item.place.locationArea, effectiveDetectedArea)
+      );
+      if (inRegion.length > 0) {
+        workingList = inRegion;
+        usedAreaScope = true;
+      } else {
+        usedGlobalFallback = true;
+      }
+    }
+
     const factor = sortDir === 'asc' ? 1 : -1;
-    return [...filtered].sort((a, b) => {
+    const sorted = [...workingList].sort((aWrap, bWrap) => {
+      const a = aWrap.place;
+      const b = bWrap.place;
       switch (sortField) {
+        case 'distance': {
+          if (aWrap.distanceKm !== null && bWrap.distanceKm !== null) {
+            return (aWrap.distanceKm - bWrap.distanceKm) * factor;
+          }
+          if (aWrap.distanceKm !== null) return -1;
+          if (bWrap.distanceKm !== null) return 1;
+          return a.name.localeCompare(b.name, 'tr');
+        }
         case 'name':
           return a.name.localeCompare(b.name, 'tr') * factor;
         case 'product': {
@@ -374,10 +790,30 @@ export default function App() {
           const prodB = b.cuisineType || CATEGORY_LABELS[b.category];
           return (prodA.localeCompare(prodB, 'tr') || a.name.localeCompare(b.name, 'tr')) * factor;
         }
-        case 'rating':
-          return (a.avgRating - b.avgRating || a.reviewCount - b.reviewCount) * factor;
-        case 'location':
-          return (a.mapsUrl || '').localeCompare(b.mapsUrl || '', 'tr') * factor;
+        case 'rating': {
+          const ratingDiff = a.avgRating - b.avgRating;
+          if (ratingDiff !== 0) return ratingDiff * factor;
+          const reviewDiff = a.reviewCount - b.reviewCount;
+          if (reviewDiff !== 0) return reviewDiff * factor;
+          if (aWrap.distanceKm !== null && bWrap.distanceKm !== null) {
+            return aWrap.distanceKm - bWrap.distanceKm;
+          }
+          return a.name.localeCompare(b.name, 'tr');
+        }
+        case 'price': {
+          const priceA = a.avgPriceRating ?? 0;
+          const priceB = b.avgPriceRating ?? 0;
+          if (priceA > 0 && priceB <= 0) return -1;
+          if (priceB > 0 && priceA <= 0) return 1;
+          if (priceA !== priceB) return (priceA - priceB) * factor;
+          if (b.avgRating !== a.avgRating) return b.avgRating - a.avgRating;
+          return a.name.localeCompare(b.name, 'tr');
+        }
+        case 'location': {
+          const locA = a.locationArea || a.mapsUrl || '';
+          const locB = b.locationArea || b.mapsUrl || '';
+          return locA.localeCompare(locB, 'tr') * factor;
+        }
         case 'comment':
           return (a.latestComment || '').localeCompare(b.latestComment || '', 'tr') * factor;
         case 'date':
@@ -385,7 +821,25 @@ export default function App() {
           return (a.updatedAt - b.updatedAt) * factor;
       }
     });
-  }, [statusScopedPlaces, productFilter, searchText, sortField, sortDir]);
+
+    return {
+      items: sorted,
+      usedAreaScope,
+      usedGlobalFallback,
+    };
+  }, [
+    statusScopedPlaces,
+    productFilter,
+    regionFilter,
+    searchText,
+    sortField,
+    sortDir,
+    userCoords,
+    bestInAreaActive,
+    effectiveDetectedArea,
+  ]);
+
+  const sortedAndFilteredPlaces = bestInAreaResult.items;
 
   const handleExport = async () => {
     const payload = await exportBackup(actor);
@@ -393,7 +847,7 @@ export default function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `mekannotu-yedek-${new Date().toISOString().slice(0, 10)}.json`;
+    a.download = `gourmand-yedek-${new Date().toISOString().slice(0, 10)}.json`;
     a.click();
     URL.revokeObjectURL(url);
     setNotice('Yedek dosyası indirildi.');
@@ -421,9 +875,18 @@ export default function App() {
       <header className="sticky top-0 z-30 bg-white/95 backdrop-blur-md border-b border-slate-200 pt-safe">
         <div className="h-14 px-4 sm:px-6 flex items-center justify-between gap-2">
           <div className="flex items-center gap-2.5 min-w-0">
-            <span className="font-display text-lg sm:text-xl font-bold tracking-tight text-slate-900 whitespace-nowrap">
-              MekanNotu
-            </span>
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              title="Sayfayı yenile"
+              aria-label="Gourmand - Sayfayı yenile"
+              className="min-h-[44px] inline-flex items-center gap-2.5 rounded-xl pr-1 text-left hover:opacity-85 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 cursor-pointer"
+            >
+              <GourmandLogo className="w-8 h-8 shrink-0" />
+              <span className="font-display text-lg sm:text-xl font-bold tracking-tight text-slate-900 whitespace-nowrap">
+                Gourmand
+              </span>
+            </button>
             {user?.email && (
               <span className="hidden md:inline-block text-xs text-slate-500 truncate max-w-[180px]">
                 {user.email}
@@ -514,7 +977,7 @@ export default function App() {
         {(syncError || authError) && (
           <div
             role="alert"
-            className="rounded-xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs font-medium text-rose-700"
+            className="rounded-xl bg-rose-50 border border-rose-200 px-3.5 py-2.5 text-xs font-medium text-rose-700 break-words"
           >
             {syncError || authError}
           </div>
@@ -555,39 +1018,65 @@ export default function App() {
           </div>
         )}
 
-        {/* Gidilenler / Gidilecekler Sekmeleri & Arama */}
+        {/* Gidilenler / Gidilecekler Sekmeleri & Gizle/Göster Kontrolü */}
         <div className="space-y-3">
-          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-            <div
-              role="tablist"
-              aria-label="Mekan listesi görünümü"
-              className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full overflow-x-auto"
-            >
-              {(
-                [
-                  ['all', 'Tümü', allPlaces.length],
-                  ['visited', 'Gidilenler', visitedCount],
-                  ['wishlist', 'Gidilecekler', wishlistCount],
-                ] as const
-              ).map(([key, label, count]) => {
-                const active = statusFilter === key;
-                return (
-                  <button
-                    key={key}
-                    type="button"
-                    role="tab"
-                    aria-selected={active}
-                    onClick={() => setStatusFilter(key)}
-                    className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
-                      active
-                        ? 'bg-white text-slate-900 shadow-xs'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {label} ({count})
-                  </button>
-                );
-              })}
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div
+                role="tablist"
+                aria-label="Mekan listesi görünümü"
+                className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full overflow-x-auto"
+              >
+                {(
+                  [
+                    ['all', 'Tümü', visitedCount + wishlistCount],
+                    ['visited', 'Gidilenler', visitedCount],
+                    ['wishlist', 'Gidilecekler', wishlistCount],
+                  ] as const
+                ).map(([key, label, count]) => {
+                  const active = statusFilter === key;
+                  return (
+                    <button
+                      key={key}
+                      type="button"
+                      role="tab"
+                      aria-selected={active}
+                      onClick={() => setStatusFilter(key)}
+                      className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                        active
+                          ? 'bg-white text-slate-900 shadow-xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      {label} ({count})
+                    </button>
+                  );
+                })}
+              </div>
+
+              {hiddenWishlistCount > 0 && (
+                <button
+                  type="button"
+                  onClick={() => setShowHiddenWishlist((prev) => !prev)}
+                  className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
+                    showHiddenWishlist
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                  }`}
+                >
+                  {showHiddenWishlist ? (
+                    <>
+                      <EyeOff className="w-3.5 h-3.5" />
+                      <span>Gizlenenleri Gizle ({hiddenWishlistCount})</span>
+                    </>
+                  ) : (
+                    <>
+                      <Eye className="w-3.5 h-3.5 text-amber-700" />
+                      <span>Gizlenenleri Göster ({hiddenWishlistCount})</span>
+                    </>
+                  )}
+                </button>
+              )}
             </div>
 
             <p className="text-xs text-slate-500 tabular-nums shrink-0">
@@ -599,19 +1088,20 @@ export default function App() {
             </p>
           </div>
 
-          <div className="flex flex-col sm:flex-row sm:items-center gap-2.5">
-            <div className="relative flex-1 max-w-md">
+          {/* Çoklu Kelime Akıllı Arama + Ürün & Bölge Seçimi + Konumum & Bölgenin En İyileri */}
+          <div className="grid grid-cols-2 lg:grid-cols-12 gap-2.5">
+            <div className="relative col-span-2 lg:col-span-4">
               <Search className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
                 type="search"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Mekan, ürün (ör. kebap, kokoreç), yorum ara..."
+                placeholder="Mekan, bölge (Buca, Kemeraltı), ürün ara..."
                 className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
               />
             </div>
 
-            <div className="sm:w-56 shrink-0">
+            <div className="col-span-1 lg:col-span-2">
               <label htmlFor="product-select-filter" className="sr-only">
                 Ürün çeşidine göre filtrele
               </label>
@@ -630,7 +1120,112 @@ export default function App() {
                 ))}
               </select>
             </div>
+
+            <div className="col-span-1 lg:col-span-2">
+              <label htmlFor="region-select-filter" className="sr-only">
+                Bölgeye göre filtrele
+              </label>
+              <select
+                id="region-select-filter"
+                value={regionFilter}
+                onChange={(e) => setRegionFilter(e.target.value)}
+                className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              >
+                <option value="all">Tüm Bölgeler</option>
+                {regionFilterOptions.map((opt) => (
+                  <option key={opt.key} value={opt.key}>
+                    {opt.label} ({opt.count})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="col-span-1 lg:col-span-2">
+              <button
+                type="button"
+                onClick={handleToggleNearMe}
+                disabled={locatingUser || locatingBestInArea}
+                className={`w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap ${
+                  userCoords && !bestInAreaActive
+                    ? 'bg-emerald-700 text-white border-emerald-700'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {locatingUser ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Navigation className="w-4 h-4" />
+                )}
+                <span>{userCoords && !bestInAreaActive ? 'Yakınımda Aktif' : 'Yakınımdakiler'}</span>
+              </button>
+            </div>
+
+            <div className="col-span-1 lg:col-span-2">
+              <button
+                type="button"
+                onClick={handleToggleBestInArea}
+                disabled={locatingUser || locatingBestInArea}
+                title="Bulunduğunuz bölgedeki en yüksek yıldızlı mekanları sırala"
+                className={`w-full min-h-[44px] inline-flex items-center justify-center gap-1.5 px-3 py-2 rounded-xl border text-xs font-semibold transition-colors whitespace-nowrap ${
+                  bestInAreaActive
+                    ? 'bg-slate-900 text-white border-slate-900'
+                    : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                }`}
+              >
+                {locatingBestInArea ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Star
+                    className={`w-4 h-4 ${
+                      bestInAreaActive ? 'fill-amber-400 text-amber-400' : 'fill-amber-500 text-amber-500'
+                    }`}
+                  />
+                )}
+                <span>Bölgenin En İyileri</span>
+              </button>
+            </div>
           </div>
+
+          {bestInAreaActive && (
+            <div className="rounded-xl bg-amber-50/80 border border-amber-200 px-3.5 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950">
+              <div className="flex items-center gap-1.5 min-w-0">
+                <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />
+                <span>
+                  {bestInAreaResult.usedAreaScope ? (
+                    <>
+                      <span className="font-semibold">
+                        {effectiveDetectedArea || 'Bulunduğunuz bölge'}
+                      </span>{' '}
+                      içindeki en yüksek yıldızlı mekanlar sıralanıyor
+                    </>
+                  ) : bestInAreaResult.usedGlobalFallback ? (
+                    <>
+                      Konumunuzdaki bölgede (
+                      <span className="font-semibold">{effectiveDetectedArea || '12 km çevre'}</span>)
+                      henüz kayıt yok; tüm bölgelerdeki en yüksek puanlılar gösteriliyor
+                    </>
+                  ) : (
+                    <>
+                      {regionFilter !== 'all'
+                        ? 'Seçili bölgedeki en yüksek yıldızlı mekanlar gösteriliyor'
+                        : 'En yüksek yıldızlı mekanlar gösteriliyor'}
+                    </>
+                  )}
+                </span>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  setBestInAreaActive(false);
+                  setSortField(userCoords ? 'distance' : 'date');
+                  setSortDir(userCoords ? 'asc' : 'desc');
+                }}
+                className="font-semibold text-amber-900 hover:underline shrink-0"
+              >
+                Filtreyi Kapat
+              </button>
+            </div>
+          )}
 
           {/* Hızlı Ürün Çeşidi Seçim Çubuğu */}
           <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
@@ -664,6 +1259,70 @@ export default function App() {
               );
             })}
           </div>
+
+          {/* Çift Yönlü Ürün ↔ Bölge Özeti */}
+          {(inferredSearchProduct || inferredSearchRegion) && (
+            <div className="rounded-xl bg-white border border-slate-200 px-3.5 py-2.5 space-y-2">
+              {inferredSearchProduct && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="font-semibold text-slate-700 inline-flex items-center gap-1 mr-1">
+                    <MapPin className="w-3.5 h-3.5 text-emerald-700" />
+                    {inferredSearchProduct.label} bulunan bölgeler:
+                  </span>
+                  {regionsForActiveProduct.length === 0 ? (
+                    <span className="text-slate-500">Henüz bölge bilgisi eklenmemiş</span>
+                  ) : (
+                    regionsForActiveProduct.map((reg) => {
+                      const active = regionFilter === reg.key;
+                      return (
+                        <button
+                          key={reg.key}
+                          type="button"
+                          onClick={() => setRegionFilter(active ? 'all' : reg.key)}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors tabular-nums ${
+                            active
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {reg.label} · {reg.count}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+
+              {inferredSearchRegion && (
+                <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                  <span className="font-semibold text-slate-700 mr-1">
+                    {inferredSearchRegion.label} bölgesindeki ürünler:
+                  </span>
+                  {productsInActiveRegion.length === 0 ? (
+                    <span className="text-slate-500">Bu bölgede henüz ürün etiketi yok</span>
+                  ) : (
+                    productsInActiveRegion.map((prod) => {
+                      const active = productFilter === prod.key;
+                      return (
+                        <button
+                          key={prod.key}
+                          type="button"
+                          onClick={() => setProductFilter(active ? 'all' : prod.key)}
+                          className={`min-h-[32px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors tabular-nums ${
+                            active
+                              ? 'bg-emerald-700 text-white border-emerald-700'
+                              : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {prod.label} · {prod.count}
+                        </button>
+                      );
+                    })
+                  )}
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {loadingPlaces ? (
@@ -676,14 +1335,38 @@ export default function App() {
             <h1 className="text-lg sm:text-xl font-semibold text-slate-900">
               {allPlaces.length === 0
                 ? 'Gittiğiniz ve Gideceğiniz Mekanları Ekleyin'
-                : 'Seçili Filtreye Uygun Mekan Yok'}
+                : statusFilter === 'wishlist' &&
+                    hiddenWishlistCount > 0 &&
+                    !showHiddenWishlist &&
+                    !searchText &&
+                    productFilter === 'all' &&
+                    regionFilter === 'all'
+                  ? `Gizlediğiniz ${hiddenWishlistCount} Gidilecek Mekan Var`
+                  : 'Seçili Filtreye Uygun Mekan Yok'}
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {allPlaces.length === 0
-                ? 'İster gittiğiniz yerleri puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gidilecekler listenize ekleyin.'
-                : 'Farklı bir ürün çeşidi veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
+                ? 'İster gittiğiniz restoran ve lokantaları puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gidilecekler listenize ekleyin.'
+                : statusFilter === 'wishlist' &&
+                    hiddenWishlistCount > 0 &&
+                    !showHiddenWishlist &&
+                    !searchText &&
+                    productFilter === 'all' &&
+                    regionFilter === 'all'
+                  ? 'Gidilecekler listenizdeki kayıtları kendi görünümünüzde gizlediniz. İstediğiniz zaman tekrar gösterebilirsiniz.'
+                  : 'Farklı bir ürün çeşidi, bölge veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
             </p>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
+              {hiddenWishlistCount > 0 && !showHiddenWishlist && statusFilter !== 'visited' && (
+                <button
+                  type="button"
+                  onClick={() => setShowHiddenWishlist(true)}
+                  className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 text-xs sm:text-sm font-semibold hover:bg-amber-100 transition-colors"
+                >
+                  <Eye className="w-4 h-4 text-amber-700" />
+                  <span>Gizlenenleri Göster ({hiddenWishlistCount})</span>
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setShowAddModal(true)}
@@ -692,13 +1375,19 @@ export default function App() {
                 <Plus className="w-4 h-4" />
                 <span>{statusFilter === 'wishlist' ? 'Gidilecek Yer Ekle' : 'Yeni Mekan Ekle'}</span>
               </button>
-              {(productFilter !== 'all' || searchText || statusFilter !== 'all') && (
+              {(productFilter !== 'all' ||
+                regionFilter !== 'all' ||
+                searchText ||
+                statusFilter !== 'all' ||
+                bestInAreaActive) && (
                 <button
                   type="button"
                   onClick={() => {
                     setProductFilter('all');
+                    setRegionFilter('all');
                     setSearchText('');
                     setStatusFilter('all');
+                    setBestInAreaActive(false);
                   }}
                   className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs sm:text-sm font-semibold hover:bg-slate-50 transition-colors"
                 >
@@ -724,7 +1413,7 @@ export default function App() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold text-slate-600">
-                      <th scope="col" className="py-3 px-4 w-[22%]">
+                      <th scope="col" className="py-3 px-4 w-[20%]">
                         <button
                           type="button"
                           onClick={() => handleSort('name')}
@@ -744,24 +1433,36 @@ export default function App() {
                           {renderSortIcon('product')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[14%]">
+                      <th scope="col" className="py-3 px-4 w-[13%]">
                         <button
                           type="button"
                           onClick={() => handleSort('rating')}
                           className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
-                          <span>Puan / Durum</span>
+                          <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />
+                          <span>Lokanta Puanı</span>
                           {renderSortIcon('rating')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[14%]">
+                      <th scope="col" className="py-3 px-4 w-[11%]">
                         <button
                           type="button"
-                          onClick={() => handleSort('location')}
+                          onClick={() => handleSort('price')}
                           className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
                         >
-                          <span>Lokasyon</span>
-                          {renderSortIcon('location')}
+                          <BadgeTurkishLira className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                          <span>Fiyat Puanı</span>
+                          {renderSortIcon('price')}
+                        </button>
+                      </th>
+                      <th scope="col" className="py-3 px-4 w-[15%]">
+                        <button
+                          type="button"
+                          onClick={() => handleSort(userCoords ? 'distance' : 'location')}
+                          className="inline-flex items-center gap-1.5 hover:text-slate-900 py-1 whitespace-nowrap"
+                        >
+                          <span>{userCoords ? 'Bölge / Mesafe' : 'Bölge & Konum'}</span>
+                          {renderSortIcon(userCoords ? 'distance' : 'location')}
                         </button>
                       </th>
                       <th scope="col" className="py-3 px-4">
@@ -774,7 +1475,7 @@ export default function App() {
                           {renderSortIcon('comment')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[92px] text-right">
+                      <th scope="col" className="py-3 px-4 w-[104px] text-right">
                         <button
                           type="button"
                           onClick={() => handleSort('date')}
@@ -787,14 +1488,17 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-slate-100 text-sm">
-                    {sortedAndFilteredPlaces.map((place) => {
+                    {sortedAndFilteredPlaces.map(({ place, distanceKm }) => {
                       const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
                       const canDeletePlace = !actor || place.ownerId === actor.uid;
                       const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
+                      const isHidden = hiddenWishlistSet.has(place.id);
                       return (
                         <tr
                           key={place.id}
-                          className="hover:bg-slate-50/80 transition-colors align-top"
+                          className={`hover:bg-slate-50/80 transition-colors align-top ${
+                            isHidden ? 'opacity-65' : ''
+                          }`}
                         >
                           <td className="py-3.5 px-4">
                             <button
@@ -831,19 +1535,25 @@ export default function App() {
 
                           <td className="py-3.5 px-4">
                             <p className="text-xs font-medium text-slate-800">
-                              {place.cuisineType || CATEGORY_LABELS[place.category]}
+                              {place.cuisineTypes.length > 0
+                                ? place.cuisineTypes.join(', ')
+                                : CATEGORY_LABELS[place.category]}
                             </p>
-                            {place.cuisineType && (
-                              <p className="text-[11px] text-slate-400">
-                                {CATEGORY_LABELS[place.category]}
-                              </p>
+                            {place.cuisineTypes.length === 0 && (
+                              <button
+                                type="button"
+                                onClick={() => setDetailPlace(place)}
+                                className="text-[11px] text-emerald-700 hover:underline mt-0.5"
+                              >
+                                Ürün çeşidi ekle
+                              </button>
                             )}
                           </td>
 
                           <td className="py-3.5 px-4">
                             {isWishlist ? (
                               <span className="text-xs font-semibold text-amber-700">
-                                Gidilecek
+                                {isHidden ? 'Gidilecek (Gizli)' : 'Gidilecek'}
                               </span>
                             ) : (
                               <>
@@ -858,25 +1568,48 @@ export default function App() {
                           </td>
 
                           <td className="py-3.5 px-4">
-                            {hasLink ? (
-                              <a
-                                href={place.mapsUrl}
-                                target="_blank"
-                                rel="noopener noreferrer"
-                                className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline py-1"
-                              >
-                                <span>Haritada Aç</span>
-                                <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                              </a>
+                            {isWishlist ? (
+                              <span className="text-xs text-slate-400">—</span>
                             ) : (
-                              <button
-                                type="button"
-                                onClick={() => setDetailPlace(place)}
-                                className="text-xs text-slate-400 hover:text-emerald-700 py-1"
-                              >
-                                Link eklenmedi
-                              </button>
+                              <PriceRatingDisplay
+                                rating={place.avgPriceRating}
+                                count={place.priceRatingCount}
+                              />
                             )}
+                          </td>
+
+                          <td className="py-3.5 px-4">
+                            <div className="space-y-0.5">
+                              {place.locationArea && (
+                                <p className="text-xs font-medium text-slate-800">
+                                  {place.locationArea}
+                                </p>
+                              )}
+                              {distanceKm !== null && (
+                                <p className="font-mono text-[11px] text-emerald-700 tabular-nums">
+                                  {formatDistanceLabel(distanceKm)}
+                                </p>
+                              )}
+                              {hasLink ? (
+                                <a
+                                  href={place.mapsUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline py-0.5"
+                                >
+                                  <span>Haritada Aç</span>
+                                  <ExternalLink className="w-3.5 h-3.5 shrink-0" />
+                                </a>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setDetailPlace(place)}
+                                  className="text-xs text-slate-400 hover:text-emerald-700 py-0.5"
+                                >
+                                  {place.locationArea ? 'Link ekle' : 'Bölge / link ekle'}
+                                </button>
+                              )}
+                            </div>
                           </td>
 
                           <td className="py-3.5 px-4">
@@ -906,6 +1639,37 @@ export default function App() {
                                   month: '2-digit',
                                 })}
                               </span>
+                              {isWishlist && (
+                                <button
+                                  type="button"
+                                  onClick={() => void handleToggleHiddenWishlist(place.id, !isHidden)}
+                                  title={
+                                    isHidden
+                                      ? 'Gidilecekler listemde tekrar göster'
+                                      : 'Gidilecekler listemde gizle'
+                                  }
+                                  aria-label={
+                                    isHidden ? `${place.name} kaydını göster` : `${place.name} kaydını gizle`
+                                  }
+                                  className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                                    isHidden
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                      : 'bg-white text-slate-600 border-slate-200 hover:text-slate-900 hover:bg-slate-50'
+                                  }`}
+                                >
+                                  {isHidden ? (
+                                    <>
+                                      <Eye className="w-3.5 h-3.5" />
+                                      <span>Göster</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <EyeOff className="w-3.5 h-3.5" />
+                                      <span>Gizle</span>
+                                    </>
+                                  )}
+                                </button>
+                              )}
                               {canDeletePlace && (
                                 <button
                                   type="button"
@@ -931,10 +1695,12 @@ export default function App() {
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1">
                 {(
                   [
+                    ...(userCoords ? ([['distance', 'Mesafe']] as const) : []),
                     ['name', 'Mekan Adı'],
                     ['product', 'Ürün Çeşidi'],
-                    ['rating', 'Puan'],
-                    ['comment', 'Yorumlar'],
+                    ['location', 'Bölge'],
+                    ['rating', 'Lokanta Puanı'],
+                    ['price', 'Fiyat Puanı'],
                     ['date', 'Tarih'],
                   ] as const
                 ).map(([field, label]) => {
@@ -950,6 +1716,16 @@ export default function App() {
                           : 'bg-white text-slate-600 border-slate-200'
                       }`}
                     >
+                      {field === 'rating' && (
+                        <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />
+                      )}
+                      {field === 'price' && (
+                        <BadgeTurkishLira
+                          className={`w-3.5 h-3.5 shrink-0 ${
+                            active ? 'text-emerald-300' : 'text-emerald-700'
+                          }`}
+                        />
+                      )}
                       <span>{label}</span>
                       {active ? (
                         sortDir === 'asc' ? (
@@ -966,12 +1742,13 @@ export default function App() {
               </div>
 
               <div className="rounded-2xl bg-white border border-slate-200 divide-y divide-slate-100 overflow-hidden">
-                {sortedAndFilteredPlaces.map((place) => {
+                {sortedAndFilteredPlaces.map(({ place, distanceKm }) => {
                   const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
                   const canDeletePlace = !actor || place.ownerId === actor.uid;
                   const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
+                  const isHidden = hiddenWishlistSet.has(place.id);
                   return (
-                    <div key={place.id} className="p-3.5 space-y-2">
+                    <div key={place.id} className={`p-3.5 space-y-2 ${isHidden ? 'opacity-65' : ''}`}>
                       <div className="flex items-start justify-between gap-3">
                         <button
                           type="button"
@@ -992,21 +1769,32 @@ export default function App() {
                             </p>
                             <p className="text-[11px] text-slate-500 truncate">
                               {CATEGORY_LABELS[place.category]}
+                              {place.locationArea ? ` · ${place.locationArea}` : ''}
+                              {distanceKm !== null ? ` · ${formatDistanceLabel(distanceKm)}` : ''}
                               {place.cuisineType ? ` · ${place.cuisineType}` : ''}
-                              {actor
-                                ? ` · Ekleyen: ${place.authorName}${
-                                    place.ownerId === actor.uid ? ' (Siz)' : ''
-                                  }`
-                                : ''}
                             </p>
+                            {actor && (
+                              <p className="text-[11px] text-slate-400 truncate">
+                                Ekleyen: {place.authorName}
+                                {place.ownerId === actor.uid ? ' (Siz)' : ''}
+                              </p>
+                            )}
                           </div>
                         </button>
 
-                        <div className="shrink-0 pt-0.5">
+                        <div className="shrink-0 pt-0.5 flex flex-col items-end gap-1">
                           {isWishlist ? (
-                            <span className="text-xs font-semibold text-amber-700">Gidilecek</span>
+                            <span className="text-xs font-semibold text-amber-700">
+                              {isHidden ? 'Gizli' : 'Gidilecek'}
+                            </span>
                           ) : (
-                            renderStars(place.avgRating)
+                            <>
+                              {renderStars(place.avgRating)}
+                              <PriceRatingDisplay
+                                rating={place.avgPriceRating}
+                                count={place.priceRatingCount}
+                              />
+                            </>
                           )}
                         </div>
                       </div>
@@ -1041,11 +1829,11 @@ export default function App() {
                             onClick={() => setDetailPlace(place)}
                             className="min-h-[36px] text-xs text-slate-400 hover:text-emerald-700"
                           >
-                            Link eklenmedi
+                            Bölge / link ekle
                           </button>
                         )}
 
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-1.5">
                           <button
                             type="button"
                             onClick={() => setDetailPlace(place)}
@@ -1053,6 +1841,32 @@ export default function App() {
                           >
                             {isWishlist ? 'Detay / Puanla' : `Yorumlar (${place.reviewCount})`}
                           </button>
+                          {isWishlist && (
+                            <button
+                              type="button"
+                              onClick={() => void handleToggleHiddenWishlist(place.id, !isHidden)}
+                              aria-label={
+                                isHidden ? `${place.name} kaydını göster` : `${place.name} kaydını gizle`
+                              }
+                              className={`min-h-[38px] inline-flex items-center gap-1 px-2.5 rounded-lg text-xs font-medium border transition-colors ${
+                                isHidden
+                                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {isHidden ? (
+                                <>
+                                  <Eye className="w-3.5 h-3.5" />
+                                  <span>Göster</span>
+                                </>
+                              ) : (
+                                <>
+                                  <EyeOff className="w-3.5 h-3.5" />
+                                  <span>Gizle</span>
+                                </>
+                              )}
+                            </button>
+                          )}
                           {canDeletePlace && (
                             <button
                               type="button"
@@ -1078,9 +1892,13 @@ export default function App() {
         <AddPlaceModal
           actor={actor}
           defaultVisitStatus={statusFilter === 'wishlist' ? 'wishlist' : 'visited'}
+          knownRegions={knownRegions}
           onClose={() => setShowAddModal(false)}
-          onCreated={(_id, createdStatus) => {
+          onCreated={(createdId, createdStatus, hideInWishlist) => {
             setShowAddModal(false);
+            if (createdStatus === 'wishlist' && hideInWishlist) {
+              void handleToggleHiddenWishlist(createdId, true);
+            }
             if (statusFilter !== 'all' && statusFilter !== createdStatus) {
               setStatusFilter(createdStatus);
             }
@@ -1092,6 +1910,8 @@ export default function App() {
         <PlaceDetailSheet
           actor={actor}
           place={liveDetailPlace}
+          isHiddenInWishlist={hiddenWishlistSet.has(liveDetailPlace.id)}
+          onToggleHiddenWishlist={handleToggleHiddenWishlist}
           onClose={() => setDetailPlace(null)}
           onDeleted={() => setDetailPlace(null)}
         />

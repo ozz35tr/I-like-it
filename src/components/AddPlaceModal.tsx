@@ -1,11 +1,16 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  BadgeTurkishLira,
   BookmarkPlus,
   CheckCircle2,
   ClipboardPaste,
   ExternalLink,
+  EyeOff,
   Link2,
   Loader2,
+  MapPin,
+  Plus,
+  Star,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
@@ -20,31 +25,47 @@ import {
   type VisitStatus,
 } from '../types/place';
 import { PhotoUploader } from './PhotoUploader';
+import { PriceRatingInput } from './PriceRating';
 import { StarRatingInput } from './StarRating';
 
 interface AddPlaceModalProps {
   actor?: CloudActor | null;
   defaultVisitStatus?: VisitStatus;
+  knownRegions?: string[];
   onClose: () => void;
-  onCreated: (placeId: string, visitStatus: VisitStatus) => void;
+  onCreated: (placeId: string, visitStatus: VisitStatus, hideInWishlist?: boolean) => void;
 }
 
 export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   actor,
   defaultVisitStatus = 'visited',
+  knownRegions = [],
   onClose,
   onCreated,
 }) => {
   const [visitStatus, setVisitStatus] = useState<VisitStatus>(defaultVisitStatus);
+  const [hideInWishlist, setHideInWishlist] = useState(false);
+
   const [mapsInput, setMapsInput] = useState('');
   const [cleanMapsUrl, setCleanMapsUrl] = useState('');
   const [resolvingLink, setResolvingLink] = useState(false);
   const [linkStatus, setLinkStatus] = useState<'idle' | 'valid' | 'invalid'>('idle');
+  const [pasteHint, setPasteHint] = useState<string | null>(null);
+  const mapsInputRef = useRef<HTMLInputElement | null>(null);
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<PlaceCategory>('restaurant');
-  const [cuisineType, setCuisineType] = useState('');
+  const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
+  const [customCuisineInput, setCustomCuisineInput] = useState('');
+  const [locationArea, setLocationArea] = useState('');
+  const [coords, setCoords] = useState<{ lat: number | null; lng: number | null }>({
+    lat: null,
+    lng: null,
+  });
+
   const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5>(5);
+  const [priceRating, setPriceRating] = useState<1 | 2 | 3 | 4 | 5>(3);
+  const [ratingTab, setRatingTab] = useState<'venue' | 'price'>('venue');
   const [comment, setComment] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
 
@@ -57,6 +78,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       setCleanMapsUrl('');
       setLinkStatus('idle');
       setResolvingLink(false);
+      setCoords({ lat: null, lng: null });
       return;
     }
 
@@ -70,6 +92,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
     setCleanMapsUrl(url);
     setLinkStatus('valid');
+    setPasteHint(null);
     if (sharedLabel && !name.trim()) {
       setName(sharedLabel.slice(0, STORAGE_LIMITS.NAME_MAX));
     }
@@ -79,8 +102,18 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       setResolvingLink(true);
       try {
         const resolved = await resolveGoogleMapsLink(trimmed, controller.signal);
-        if (resolved && !controller.signal.aborted && resolved.name && !name.trim()) {
-          setName(resolved.name.slice(0, STORAGE_LIMITS.NAME_MAX));
+        if (resolved && !controller.signal.aborted) {
+          if (resolved.name) {
+            setName((prev) => (prev.trim() ? prev : resolved.name.slice(0, STORAGE_LIMITS.NAME_MAX)));
+          }
+          if (resolved.locationArea) {
+            setLocationArea((prev) =>
+              prev.trim() ? prev : resolved.locationArea.slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX)
+            );
+          }
+          if (typeof resolved.lat === 'number' && typeof resolved.lng === 'number') {
+            setCoords({ lat: resolved.lat, lng: resolved.lng });
+          }
         }
       } finally {
         if (!controller.signal.aborted) {
@@ -97,20 +130,62 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
   const handlePasteFromClipboard = async () => {
     setError(null);
-    if (!navigator.clipboard?.readText) {
-      setError('Tarayıcınız tek dokunuşla yapıştırmayı desteklemiyor; kutuya basılı tutup yapıştırabilirsiniz.');
-      return;
-    }
-    try {
-      const clipText = await navigator.clipboard.readText();
-      if (!clipText.trim()) {
-        setError('Panoda kopyalanmış bir metin veya link bulunamadı.');
-        return;
+    setPasteHint(null);
+
+    if (navigator.clipboard?.readText) {
+      try {
+        const clipText = await navigator.clipboard.readText();
+        if (clipText.trim()) {
+          setMapsInput(clipText.trim());
+          return;
+        }
+        setPasteHint('Panoda kopyalanmış metin yok. Bağlantıyı doğrudan kutuya yapıştırabilirsiniz.');
+      } catch {
+        setPasteHint('Doğrudan kutunun içine uzun basıp Yapıştır (veya Ctrl+V) yapabilirsiniz.');
       }
-      setMapsInput(clipText.trim());
-    } catch {
-      setError('Pano izni verilemedi; linki doğrudan kutuya yapıştırabilirsiniz.');
+    } else {
+      setPasteHint('Doğrudan kutunun içine uzun basıp Yapıştır (veya Ctrl+V) yapabilirsiniz.');
     }
+
+    mapsInputRef.current?.focus();
+    mapsInputRef.current?.select();
+  };
+
+  const toggleCuisineTag = (label: string) => {
+    const clean = label.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
+    if (!clean) return;
+    const key = clean.toLocaleLowerCase('tr');
+
+    setSelectedCuisines((prev) => {
+      const exists = prev.some((item) => item.toLocaleLowerCase('tr') === key);
+      if (exists) {
+        return prev.filter((item) => item.toLocaleLowerCase('tr') !== key);
+      }
+      if (prev.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES) {
+        return prev;
+      }
+      return [...prev, clean];
+    });
+  };
+
+  const handleAddCustomCuisine = () => {
+    const parts = customCuisineInput
+      .split(',')
+      .map((s) => s.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX))
+      .filter(Boolean);
+    if (parts.length === 0) return;
+
+    setSelectedCuisines((prev) => {
+      const next = [...prev];
+      for (const p of parts) {
+        if (next.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES) break;
+        if (!next.some((item) => item.toLocaleLowerCase('tr') === p.toLocaleLowerCase('tr'))) {
+          next.push(p);
+        }
+      }
+      return next;
+    });
+    setCustomCuisineInput('');
   };
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -121,6 +196,19 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     const trimmedMapsInput = mapsInput.trim();
     const extracted = trimmedMapsInput ? extractSharedMapsInput(trimmedMapsInput) : { url: null };
     const finalUrl = cleanMapsUrl || extracted.url || '';
+
+    // Include unsubmitted custom cuisine text if user typed it and didn't click Ekle
+    const pendingCustom = customCuisineInput
+      .split(',')
+      .map((s) => s.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX))
+      .filter(Boolean);
+    const finalCuisines = [...selectedCuisines];
+    for (const p of pendingCustom) {
+      if (finalCuisines.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES) break;
+      if (!finalCuisines.some((item) => item.toLocaleLowerCase('tr') === p.toLocaleLowerCase('tr'))) {
+        finalCuisines.push(p);
+      }
+    }
 
     if (trimmedName.length < STORAGE_LIMITS.NAME_MIN) {
       setError('Lütfen mekan adını en az 2 karakter olarak girin.');
@@ -145,13 +233,18 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
         name: trimmedName,
         category,
         visitStatus,
-        cuisineType: cuisineType.trim(),
+        cuisineTypes: finalCuisines,
+        cuisineType: finalCuisines.join(', '),
+        locationArea: locationArea.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX),
+        lat: coords.lat,
+        lng: coords.lng,
         mapsUrl: finalUrl,
         initialRating: visitStatus === 'visited' ? rating : undefined,
+        initialPriceRating: visitStatus === 'visited' ? priceRating : undefined,
         initialComment: trimmedComment,
         photos,
       });
-      onCreated(placeId, visitStatus);
+      onCreated(placeId, visitStatus, visitStatus === 'wishlist' ? hideInWishlist : false);
     } catch (err) {
       setError(formatFriendlyFirestoreError(err, 'Mekan kaydedilemedi.'));
     } finally {
@@ -220,7 +313,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </button>
           </div>
 
-          {/* Google Maps Share Link (Öne çıkan pratik adım) */}
+          {/* Google Maps Share Link */}
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
               <label htmlFor="maps-share-link" className="text-xs font-semibold text-slate-700">
@@ -241,17 +334,28 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              Google Haritalar&apos;dan <span className="font-medium text-slate-700">Paylaş → Bağlantıyı Kopyala</span> yapıp yapıştırdığınızda mekan adı otomatik doldurulur.
+              Google Haritalar&apos;dan kopyaladığınız bağlantıyı doğrudan aşağıdaki kutuya yapıştırdığınızda mekan adı ve bölge otomatik doldurulur.
             </p>
 
             <div className="flex gap-2">
               <div className="relative flex-1">
                 <Link2 className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
                 <input
+                  ref={mapsInputRef}
                   id="maps-share-link"
                   type="text"
+                  inputMode="url"
+                  autoComplete="off"
                   value={mapsInput}
                   onChange={(e) => setMapsInput(e.target.value)}
+                  onPaste={(e) => {
+                    const pasted = e.clipboardData?.getData('text');
+                    if (pasted) {
+                      e.preventDefault();
+                      setMapsInput(pasted.trim());
+                      setPasteHint(null);
+                    }
+                  }}
                   placeholder="https://maps.app.goo.gl/..."
                   className="w-full min-h-[44px] pl-9 pr-8 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
                 />
@@ -272,6 +376,12 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
               </button>
             </div>
 
+            {pasteHint && (
+              <p className="text-[11px] text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                {pasteHint}
+              </p>
+            )}
+
             {linkStatus === 'invalid' && (
               <p className="text-[11px] font-medium text-rose-600">
                 Geçerli bir Google Haritalar linki gibi görünmüyor; isterseniz alanı temizleyip linksiz kaydedebilirsiniz.
@@ -279,7 +389,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             )}
           </div>
 
-          {/* Mekan Adı & İşletme Türü */}
+          {/* Mekan Adı & İşletme Türü (Esnaf Lokantası dahil) */}
           <div className="space-y-3">
             <div>
               <label htmlFor="place-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
@@ -292,40 +402,84 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                 maxLength={STORAGE_LIMITS.NAME_MAX}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                placeholder="Örn: Köşe Kebap"
+                placeholder="Örn: İlk Isırık Kokoreç"
                 className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
               />
             </div>
 
-            <div className="grid grid-cols-4 gap-1.5 p-1 bg-slate-100 rounded-xl">
-              {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
-                <button
-                  key={cat}
-                  type="button"
-                  onClick={() => setCategory(cat)}
-                  className={`min-h-[38px] px-2 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
-                    category === cat
-                      ? 'bg-white text-slate-900 shadow-sm'
-                      : 'text-slate-600 hover:text-slate-900'
-                  }`}
-                >
-                  {CATEGORY_LABELS[cat]}
-                </button>
-              ))}
+            <div>
+              <span className="block text-xs font-semibold text-slate-700 mb-1.5">Mekan Türü</span>
+              <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl">
+                {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
+                  <button
+                    key={cat}
+                    type="button"
+                    onClick={() => setCategory(cat)}
+                    className={`min-h-[38px] flex-1 min-w-[92px] px-2.5 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                      category === cat
+                        ? 'bg-white text-slate-900 shadow-sm'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {CATEGORY_LABELS[cat]}
+                  </button>
+                ))}
+              </div>
             </div>
           </div>
 
-          {/* Ürün Çeşidi / Kategorisi */}
+          {/* Bölge / Lokasyon */}
+          <div className="space-y-2">
+            <label
+              htmlFor="place-location-area"
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700"
+            >
+              <MapPin className="w-3.5 h-3.5 text-emerald-700" />
+              <span>Bölge / Semt / İlçe</span>
+            </label>
+            <input
+              id="place-location-area"
+              type="text"
+              maxLength={STORAGE_LIMITS.LOCATION_AREA_MAX}
+              value={locationArea}
+              onChange={(e) => setLocationArea(e.target.value)}
+              placeholder="Örn: Buca, İzmir veya Kemeraltı, Konak"
+              className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+            />
+            {knownRegions.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {knownRegions.slice(0, 8).map((region) => (
+                  <button
+                    key={region}
+                    type="button"
+                    onClick={() => setLocationArea(region)}
+                    className={`min-h-[32px] px-2.5 py-1 rounded-lg text-[11px] font-medium border transition-colors whitespace-nowrap ${
+                      locationArea.toLocaleLowerCase('tr') === region.toLocaleLowerCase('tr')
+                        ? 'bg-emerald-700 text-white border-emerald-700'
+                        : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                    }`}
+                  >
+                    {region}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Çoklu Ürün Çeşidi Seçimi */}
           <div className="space-y-2">
             <div className="flex items-center justify-between gap-2">
               <label htmlFor="cuisine-type" className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700">
                 <UtensilsCrossed className="w-3.5 h-3.5 text-emerald-700" />
-                <span>Ürün Çeşidi</span>
+                <span>
+                  Ürün Çeşidi (Birden fazla seçilebilir · {selectedCuisines.length}/
+                  {STORAGE_LIMITS.MAX_CUISINE_TYPES})
+                </span>
               </label>
-              {cuisineType && (
+              {selectedCuisines.length > 0 && (
                 <button
                   type="button"
-                  onClick={() => setCuisineType('')}
+                  onClick={() => setSelectedCuisines([])}
                   className="text-[11px] font-medium text-slate-500 hover:text-slate-800"
                 >
                   Temizle
@@ -335,12 +489,14 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
             <div className="flex flex-wrap gap-1.5">
               {PRODUCT_TYPE_PRESETS.map((preset) => {
-                const active = cuisineType.toLowerCase() === preset.toLowerCase();
+                const active = selectedCuisines.some(
+                  (c) => c.toLocaleLowerCase('tr') === preset.toLocaleLowerCase('tr')
+                );
                 return (
                   <button
                     key={preset}
                     type="button"
-                    onClick={() => setCuisineType(active ? '' : preset)}
+                    onClick={() => toggleCuisineTag(preset)}
                     className={`min-h-[36px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
                       active
                         ? 'bg-emerald-700 text-white border-emerald-700'
@@ -351,24 +507,125 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                   </button>
                 );
               })}
+              {selectedCuisines
+                .filter(
+                  (c) =>
+                    !PRODUCT_TYPE_PRESETS.some(
+                      (preset) => preset.toLocaleLowerCase('tr') === c.toLocaleLowerCase('tr')
+                    )
+                )
+                .map((custom) => (
+                  <button
+                    key={custom}
+                    type="button"
+                    onClick={() => toggleCuisineTag(custom)}
+                    className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-700 text-white border border-emerald-700 whitespace-nowrap"
+                  >
+                    <span>{custom}</span>
+                    <X className="w-3 h-3" />
+                  </button>
+                ))}
             </div>
 
-            <input
-              id="cuisine-type"
-              type="text"
-              maxLength={STORAGE_LIMITS.CUISINE_TYPE_MAX}
-              value={cuisineType}
-              onChange={(e) => setCuisineType(e.target.value)}
-              placeholder="Listeden seçin veya özel ürün yazın (ör. Tantuni, Börek)"
-              className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
-            />
+            <div className="flex gap-2">
+              <input
+                id="cuisine-type"
+                type="text"
+                maxLength={STORAGE_LIMITS.CUISINE_TYPE_MAX}
+                value={customCuisineInput}
+                onChange={(e) => setCustomCuisineInput(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter') {
+                    e.preventDefault();
+                    handleAddCustomCuisine();
+                  }
+                }}
+                placeholder="Özel ürün ekleyin (ör. Tantuni, Midye)"
+                className="flex-1 min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              />
+              <button
+                type="button"
+                onClick={handleAddCustomCuisine}
+                disabled={
+                  !customCuisineInput.trim() ||
+                  selectedCuisines.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES
+                }
+                className="min-h-[44px] shrink-0 inline-flex items-center gap-1 px-3.5 py-2 rounded-xl border border-slate-300 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-50 disabled:opacity-40"
+              >
+                <Plus className="w-4 h-4 text-emerald-700" />
+                <span>Ekle</span>
+              </button>
+            </div>
           </div>
 
-          {/* Puan & Yorum (Gittiğim Yer için zorunlu, Gidilecek Yer için sadece isteğe bağlı not) */}
+          {visitStatus === 'wishlist' && (
+            <label className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={hideInWishlist}
+                onChange={(e) => setHideInWishlist(e.target.checked)}
+                className="w-4 h-4 rounded border-slate-300 text-emerald-700 focus:ring-emerald-600"
+              />
+              <EyeOff className="w-4 h-4 text-slate-500 shrink-0" />
+              <span className="text-xs font-medium text-slate-700">
+                Gidilecekler listemde şimdilik gizli tut (istediğiniz zaman gösterebilirsiniz)
+              </span>
+            </label>
+          )}
+
+          {/* Lokanta Puanı & Fiyat Puanı Sekmeleri */}
           {visitStatus === 'visited' && (
-            <div>
-              <span className="block text-xs font-semibold text-slate-700 mb-1">Puan *</span>
-              <StarRatingInput value={rating} onChange={setRating} />
+            <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2.5">
+              <div
+                role="tablist"
+                aria-label="Puanlama türü"
+                className="grid grid-cols-2 gap-1.5 p-1 bg-slate-200/70 rounded-xl"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={ratingTab === 'venue'}
+                  onClick={() => setRatingTab('venue')}
+                  className={`min-h-[38px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                    ratingTab === 'venue'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />
+                  <span>Lokanta Puanı · {rating}/5</span>
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={ratingTab === 'price'}
+                  onClick={() => setRatingTab('price')}
+                  className={`min-h-[38px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                    ratingTab === 'price'
+                      ? 'bg-white text-slate-900 shadow-xs'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  <BadgeTurkishLira className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                  <span>Fiyat Puanı · {priceRating}/5</span>
+                </button>
+              </div>
+
+              {ratingTab === 'venue' ? (
+                <div>
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Lezzet, servis ve genel mekan puanı *
+                  </span>
+                  <StarRatingInput value={rating} onChange={setRating} />
+                </div>
+              ) : (
+                <div>
+                  <span className="block text-[11px] font-medium text-slate-500 mb-1">
+                    Fiyat / performans değerlendirmesi (1 Çok Pahalı – 5 Çok Uygun)
+                  </span>
+                  <PriceRatingInput value={priceRating} onChange={setPriceRating} />
+                </div>
+              )}
             </div>
           )}
 

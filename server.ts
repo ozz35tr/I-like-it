@@ -185,6 +185,59 @@ async function startServer() {
     }
   });
 
+  app.get('/api/reverse-geocode', async (req, res) => {
+    const lat = Number(req.query.lat);
+    const lng = Number(req.query.lng);
+    if (
+      !Number.isFinite(lat) ||
+      !Number.isFinite(lng) ||
+      lat < -90 ||
+      lat > 90 ||
+      lng < -180 ||
+      lng > 180
+    ) {
+      res.status(400).json({ error: 'Geçersiz koordinat.' });
+      return;
+    }
+
+    try {
+      const url = `https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat=${encodeURIComponent(
+        String(lat)
+      )}&lon=${encodeURIComponent(String(lng))}&zoom=14&accept-language=tr`;
+      const response = await fetch(url, {
+        headers: {
+          'User-Agent': 'GourmandApp/1.0',
+          Accept: 'application/json',
+          'Accept-Language': 'tr-TR,tr;q=0.9',
+        },
+        signal: AbortSignal.timeout(4500),
+      });
+
+      if (!response.ok) {
+        res.json({ area: '', city: '' });
+        return;
+      }
+
+      const data = (await response.json()) as {
+        address?: Record<string, string | undefined>;
+      };
+      const addr = data.address || {};
+      const district =
+        addr.town ||
+        addr.city_district ||
+        addr.suburb ||
+        addr.neighbourhood ||
+        addr.county ||
+        addr.city ||
+        addr.province ||
+        '';
+      const city = addr.province || addr.city || addr.state || '';
+      res.json({ area: district.trim(), city: city.trim() });
+    } catch {
+      res.json({ area: '', city: '' });
+    }
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -199,10 +252,12 @@ async function startServer() {
             next();
             return;
           }
-          const patched = result.code.replace(
-            'await wsTransport.connect(handlers);',
-            'return;'
-          );
+          const patched = result.code
+            .replace('await wsTransport.connect(handlers);', 'return;')
+            .replace(
+              'ws.send(JSON.stringify(data));',
+              'if (ws && ws.readyState === ws.OPEN) ws.send(JSON.stringify(data));'
+            );
           res.type('application/javascript').send(patched);
         } catch {
           next();

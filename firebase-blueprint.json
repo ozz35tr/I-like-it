@@ -2,7 +2,7 @@
   "entities": {
     "Place": {
       "title": "Place",
-      "description": "A visited restaurant, cafe, bakery, or bistro shared across signed-in users with author attribution, optional Google Maps share link, and aggregated star rating.",
+      "description": "A visited or wishlist restaurant, lokanta, cafe, pastane, büfe, bar, bakery, or bistro shared across signed-in users with author attribution, product tags, location area, optional coordinates, and aggregated star rating.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -32,7 +32,7 @@
         "category": {
           "type": "string",
           "description": "Venue category key.",
-          "enum": ["restaurant", "cafe", "bakery", "bistro"]
+          "enum": ["restaurant", "esnaf", "cafe", "bakery", "bistro", "bufe", "bar", "pastane"]
         },
         "visitStatus": {
           "type": "string",
@@ -41,9 +41,27 @@
         },
         "cuisineType": {
           "type": "string",
-          "description": "Product or cuisine specialty (e.g., Kebap, Çiğ Köfte, Kokoreç, Hamburger, Balık).",
+          "description": "Comma-separated summary of product or cuisine specialties.",
           "minLength": 0,
-          "maxLength": 40
+          "maxLength": 160
+        },
+        "cuisineTypes": {
+          "type": "array",
+          "description": "List of up to 6 selected product/cuisine specialties (each max 40 chars)."
+        },
+        "locationArea": {
+          "type": "string",
+          "description": "District, neighborhood, or region name (e.g., Buca, Kemeraltı, Kadıköy).",
+          "minLength": 0,
+          "maxLength": 80
+        },
+        "lat": {
+          "type": "number",
+          "description": "Optional latitude coordinate (-90 to 90)."
+        },
+        "lng": {
+          "type": "number",
+          "description": "Optional longitude coordinate (-180 to 180)."
         },
         "mapsUrl": {
           "type": "string",
@@ -74,6 +92,18 @@
         "ratingSum": {
           "type": "number",
           "description": "Sum of all review star ratings."
+        },
+        "avgPriceRating": {
+          "type": "number",
+          "description": "Optional average price rating from 0 to 5."
+        },
+        "priceRatingCount": {
+          "type": "number",
+          "description": "Optional count of reviews that included a price rating."
+        },
+        "priceRatingSum": {
+          "type": "number",
+          "description": "Optional sum of price ratings across reviews."
         },
         "createdAt": {
           "type": "string",
@@ -136,6 +166,10 @@
           "type": "number",
           "description": "Integer star rating between 1 and 5."
         },
+        "priceRating": {
+          "type": "number",
+          "description": "Optional integer price rating between 1 and 5."
+        },
         "comment": {
           "type": "string",
           "description": "User review text.",
@@ -168,16 +202,44 @@
         "createdAt",
         "updatedAt"
       ]
+    },
+    "UserPreference": {
+      "title": "UserPreference",
+      "description": "Per-user private preference document storing hidden wishlist place IDs.",
+      "type": "object",
+      "properties": {
+        "ownerId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "hiddenPlaceIds": {
+          "type": "array",
+          "description": "Bounded list of hidden wishlist place IDs (max 500)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": ["ownerId", "hiddenPlaceIds", "updatedAt"]
     }
   },
   "firestore": {
     "/places/{placeId}": {
       "schema": { "$ref": "#/entities/Place" },
-      "description": "Shared community list of visited places visible to all verified signed-in users."
+      "description": "Shared community list of visited and wishlist places visible to all verified signed-in users."
     },
     "/places/{placeId}/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/Review" },
       "description": "Reviews, ratings, author names, and optional compressed photos on a shared place."
+    },
+    "/users/{userId}/preferences/{prefId}": {
+      "schema": { "$ref": "#/entities/UserPreference" },
+      "description": "Private per-user preferences such as hidden wishlist entries."
     },
     "/users/{userId}/places/{placeId}": {
       "schema": { "$ref": "#/entities/Place" },

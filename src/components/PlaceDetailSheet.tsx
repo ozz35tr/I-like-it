@@ -1,42 +1,53 @@
 import React, { useEffect, useState } from 'react';
 import {
+  BadgeTurkishLira,
   Bookmark,
   Check,
   CheckCircle2,
   Copy,
   ExternalLink,
+  Eye,
+  EyeOff,
   Link2,
   Loader2,
+  MapPin,
   MessageSquarePlus,
+  Pencil,
+  Plus,
   Star,
   Trash2,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
 import { formatFriendlyFirestoreError } from '../lib/firebase';
-import { extractSharedMapsInput, getPlaceExternalMapsUrl } from '../lib/mapsLink';
+import { extractSharedMapsInput, getPlaceExternalMapsUrl, resolveGoogleMapsLink } from '../lib/mapsLink';
 import {
   addReview,
   deleteReview,
   removePlace,
   subscribeUserOrLocalPlaceReviews,
-  updateCuisineType,
   updateMapsUrl,
+  updatePlaceMetadata,
+  updateReview,
   type CloudActor,
 } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
   PRODUCT_TYPE_PRESETS,
   STORAGE_LIMITS,
+  type PlaceCategory,
   type PlaceItem,
   type ReviewItem,
 } from '../types/place';
 import { PhotoUploader } from './PhotoUploader';
+import { PRICE_RATING_LABELS, PriceRatingDisplay, PriceRatingInput } from './PriceRating';
 import { StarRatingDisplay, StarRatingInput } from './StarRating';
 
 interface PlaceDetailSheetProps {
   actor?: CloudActor | null;
   place: PlaceItem;
+  isHiddenInWishlist?: boolean;
+  onToggleHiddenWishlist?: (placeId: string, hide: boolean) => Promise<void> | void;
   onClose: () => void;
   onDeleted: () => void;
 }
@@ -53,6 +64,8 @@ function formatDate(ts: number): string {
 export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   actor,
   place,
+  isHiddenInWishlist = false,
+  onToggleHiddenWishlist,
   onClose,
   onDeleted,
 }) => {
@@ -61,6 +74,8 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [showReviewForm, setShowReviewForm] = useState(false);
 
   const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5>(5);
+  const [priceRating, setPriceRating] = useState<1 | 2 | 3 | 4 | 5>(3);
+  const [newReviewRatingTab, setNewReviewRatingTab] = useState<'venue' | 'price'>('venue');
   const [comment, setComment] = useState('');
   const [photos, setPhotos] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
@@ -68,21 +83,36 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
 
+  // Per-user own review editing state
+  const [editingReviewId, setEditingReviewId] = useState<string | null>(null);
+  const [editReviewRating, setEditReviewRating] = useState<1 | 2 | 3 | 4 | 5>(5);
+  const [editReviewPriceRating, setEditReviewPriceRating] = useState<1 | 2 | 3 | 4 | 5 | undefined>(undefined);
+  const [editReviewRatingTab, setEditReviewRatingTab] = useState<'venue' | 'price'>('venue');
+  const [editReviewComment, setEditReviewComment] = useState('');
+  const [editReviewPhotos, setEditReviewPhotos] = useState<string[]>([]);
+  const [savingReviewEdit, setSavingReviewEdit] = useState(false);
+
   const [editingLink, setEditingLink] = useState(false);
   const [linkDraft, setLinkDraft] = useState(place.mapsUrl || '');
   const [linkError, setLinkError] = useState<string | null>(null);
 
-  const [editingCuisine, setEditingCuisine] = useState(false);
-  const [cuisineDraft, setCuisineDraft] = useState(place.cuisineType || '');
-  const [savingCuisine, setSavingCuisine] = useState(false);
+  // Multi-product & location metadata editing (available for updating existing records too)
+  const [editingMeta, setEditingMeta] = useState(false);
+  const [selectedCuisines, setSelectedCuisines] = useState<string[]>(place.cuisineTypes || []);
+  const [customCuisineInput, setCustomCuisineInput] = useState('');
+  const [locationDraft, setLocationDraft] = useState(place.locationArea || '');
+  const [categoryDraft, setCategoryDraft] = useState<PlaceCategory>(place.category);
+  const [savingMeta, setSavingMeta] = useState(false);
 
   useEffect(() => {
     setLinkDraft(place.mapsUrl || '');
   }, [place.mapsUrl]);
 
   useEffect(() => {
-    setCuisineDraft(place.cuisineType || '');
-  }, [place.cuisineType]);
+    setSelectedCuisines(place.cuisineTypes || []);
+    setLocationDraft(place.locationArea || '');
+    setCategoryDraft(place.category);
+  }, [place.cuisineTypes, place.locationArea, place.category]);
 
   useEffect(() => {
     setLoadingReviews(true);
@@ -119,17 +149,60 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       await addReview(actor, {
         placeId: place.id,
         rating,
+        priceRating,
         comment: trimmed,
         photos,
       });
       setComment('');
       setPhotos([]);
       setRating(5);
+      setPriceRating(3);
+      setNewReviewRatingTab('venue');
       setShowReviewForm(false);
     } catch (err) {
       setError(formatFriendlyFirestoreError(err, 'Yorum eklenemedi.'));
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const startEditingReview = (rev: ReviewItem) => {
+    setError(null);
+    setEditingReviewId(rev.id);
+    setEditReviewRating(rev.rating);
+    setEditReviewPriceRating(rev.priceRating);
+    setEditReviewRatingTab('venue');
+    setEditReviewComment(rev.comment);
+    setEditReviewPhotos(rev.photos || []);
+  };
+
+  const handleSaveReviewEdit = async (e: React.FormEvent, rev: ReviewItem) => {
+    e.preventDefault();
+    if (actor && rev.ownerId !== actor.uid) {
+      setError('Yalnızca kendi yorumunuzu düzenleyebilirsiniz.');
+      return;
+    }
+    const trimmed = editReviewComment.trim();
+    if (trimmed.length < STORAGE_LIMITS.COMMENT_MIN) {
+      setError('Lütfen en az 2 karakterlik bir yorum yazın.');
+      return;
+    }
+    setSavingReviewEdit(true);
+    setError(null);
+    try {
+      await updateReview(actor, {
+        placeId: place.id,
+        reviewId: rev.id,
+        rating: editReviewRating,
+        priceRating: editReviewPriceRating,
+        comment: trimmed,
+        photos: editReviewPhotos,
+      });
+      setEditingReviewId(null);
+    } catch (err) {
+      setError(formatFriendlyFirestoreError(err, 'Yorum güncellenemedi.'));
+    } finally {
+      setSavingReviewEdit(false);
     }
   };
 
@@ -147,22 +220,94 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       setLinkError('Geçerli bir Google Haritalar bağlantısı girin.');
       return;
     }
-    await updateMapsUrl(actor, place.id, url);
-    setEditingLink(false);
-    setLinkError(null);
+    try {
+      await updateMapsUrl(actor, place.id, url);
+      const resolved = await resolveGoogleMapsLink(url);
+      if (resolved) {
+        const nextArea = place.locationArea || resolved.locationArea || undefined;
+        const nextLat = place.lat ?? resolved.lat ?? null;
+        const nextLng = place.lng ?? resolved.lng ?? null;
+        if (nextArea || (nextLat !== null && nextLng !== null)) {
+          await updatePlaceMetadata(actor, place.id, {
+            locationArea: nextArea,
+            lat: nextLat,
+            lng: nextLng,
+          });
+        }
+      }
+      setEditingLink(false);
+      setLinkError(null);
+    } catch (err) {
+      setLinkError(formatFriendlyFirestoreError(err, 'Bağlantı güncellenemedi.'));
+    }
   };
 
-  const handleSaveCuisine = async (nextValue?: string) => {
-    setSavingCuisine(true);
+  const toggleCuisineTag = (label: string) => {
+    const clean = label.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
+    if (!clean) return;
+    const key = clean.toLocaleLowerCase('tr');
+
+    setSelectedCuisines((prev) => {
+      const exists = prev.some((item) => item.toLocaleLowerCase('tr') === key);
+      if (exists) {
+        return prev.filter((item) => item.toLocaleLowerCase('tr') !== key);
+      }
+      if (prev.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES) {
+        return prev;
+      }
+      return [...prev, clean];
+    });
+  };
+
+  const handleAddCustomCuisine = () => {
+    const parts = customCuisineInput
+      .split(',')
+      .map((s) => s.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX))
+      .filter(Boolean);
+    if (parts.length === 0) return;
+
+    setSelectedCuisines((prev) => {
+      const next = [...prev];
+      for (const p of parts) {
+        if (next.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES) break;
+        if (!next.some((item) => item.toLocaleLowerCase('tr') === p.toLocaleLowerCase('tr'))) {
+          next.push(p);
+        }
+      }
+      return next;
+    });
+    setCustomCuisineInput('');
+  };
+
+  const handleSaveMeta = async () => {
+    setSavingMeta(true);
+    setError(null);
     try {
-      const valueToSave = (typeof nextValue === 'string' ? nextValue : cuisineDraft).trim();
-      await updateCuisineType(actor, place.id, valueToSave);
-      setCuisineDraft(valueToSave);
-      setEditingCuisine(false);
+      const pendingCustom = customCuisineInput
+        .split(',')
+        .map((s) => s.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX))
+        .filter(Boolean);
+      const nextCuisines = [...selectedCuisines];
+      for (const p of pendingCustom) {
+        if (nextCuisines.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES) break;
+        if (!nextCuisines.some((item) => item.toLocaleLowerCase('tr') === p.toLocaleLowerCase('tr'))) {
+          nextCuisines.push(p);
+        }
+      }
+
+      await updatePlaceMetadata(actor, place.id, {
+        cuisineTypes: nextCuisines,
+        cuisineType: nextCuisines.join(', '),
+        locationArea: locationDraft.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX),
+        category: categoryDraft,
+      });
+      setSelectedCuisines(nextCuisines);
+      setCustomCuisineInput('');
+      setEditingMeta(false);
     } catch (err) {
-      setError(formatFriendlyFirestoreError(err, 'Ürün çeşidi kaydedilemedi.'));
+      setError(formatFriendlyFirestoreError(err, 'Ürün çeşidi ve bölge kaydedilemedi.'));
     } finally {
-      setSavingCuisine(false);
+      setSavingMeta(false);
     }
   };
 
@@ -205,6 +350,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
             <div className="min-w-0">
               <p className="text-xs text-slate-500 truncate">
                 {CATEGORY_LABELS[place.category]}
+                {place.locationArea ? ` · ${place.locationArea}` : ''}
                 {place.cuisineType ? ` · ${place.cuisineType}` : ''}
                 {' · '}Ekleyen: <span className="font-medium text-slate-700">{place.authorName}</span>
               </p>
@@ -246,9 +392,38 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
 
             {isWishlist && (
               <div className="rounded-2xl bg-amber-50/70 border border-amber-200 p-4 space-y-2.5">
-                <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
-                  <Bookmark className="w-4 h-4 text-amber-600 shrink-0" />
-                  <span>Gidilecekler Listesinde · Henüz puanlanmadı</span>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
+                    <Bookmark className="w-4 h-4 text-amber-600 shrink-0" />
+                    <span>
+                      {isHiddenInWishlist
+                        ? 'Gidilecekler Listesinde · Sizin için gizli'
+                        : 'Gidilecekler Listesinde · Henüz puanlanmadı'}
+                    </span>
+                  </div>
+                  {onToggleHiddenWishlist && (
+                    <button
+                      type="button"
+                      onClick={() => void onToggleHiddenWishlist(place.id, !isHiddenInWishlist)}
+                      className={`min-h-[38px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold shrink-0 transition-colors ${
+                        isHiddenInWishlist
+                          ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
+                          : 'bg-white border-amber-200 text-slate-700 hover:bg-slate-50'
+                      }`}
+                    >
+                      {isHiddenInWishlist ? (
+                        <>
+                          <Eye className="w-3.5 h-3.5 text-emerald-700" />
+                          <span>Göster</span>
+                        </>
+                      ) : (
+                        <>
+                          <EyeOff className="w-3.5 h-3.5 text-slate-500" />
+                          <span>Gizle</span>
+                        </>
+                      )}
+                    </button>
+                  )}
                 </div>
                 {place.latestComment && (
                   <p className="text-xs text-amber-950 leading-relaxed">{place.latestComment}</p>
@@ -265,11 +440,18 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
             )}
 
             <div className="space-y-3 pb-4 border-b border-slate-200">
-              <div className="flex items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
                 {isWishlist ? (
                   <span className="text-xs font-medium text-slate-500">Henüz gidilmedi</span>
                 ) : (
-                  <StarRatingDisplay rating={place.avgRating} reviewCount={place.reviewCount} size="md" />
+                  <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5">
+                    <StarRatingDisplay rating={place.avgRating} reviewCount={place.reviewCount} size="md" />
+                    <PriceRatingDisplay
+                      rating={place.avgPriceRating}
+                      count={place.priceRatingCount}
+                      size="md"
+                    />
+                  </div>
                 )}
                 {hasSavedMapsUrl ? (
                   <a
@@ -377,73 +559,177 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                 </div>
               )}
 
-              {/* Ürün Çeşidi Görüntüleme / Düzenleme */}
-              {!editingCuisine ? (
-                <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <UtensilsCrossed className="w-4 h-4 text-emerald-700 shrink-0" />
-                    <span className="text-xs text-slate-700 truncate">
-                      Ürün çeşidi:{' '}
+              {/* Ürün Çeşidi (Çoklu), Bölge ve Mekan Türü Güncelleme */}
+              {!editingMeta ? (
+                <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2.5 space-y-1.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <UtensilsCrossed className="w-4 h-4 text-emerald-700 shrink-0" />
+                      <span className="text-xs text-slate-700 truncate">
+                        Ürün çeşidi:{' '}
+                        <span className="font-semibold text-slate-900">
+                          {place.cuisineTypes.length > 0
+                            ? place.cuisineTypes.join(', ')
+                            : 'Belirtilmedi'}
+                        </span>
+                      </span>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setEditingMeta(true)}
+                      className="min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-semibold text-emerald-700 hover:bg-emerald-50 shrink-0"
+                    >
+                      Güncelle
+                    </button>
+                  </div>
+                  <div className="flex items-center gap-2 text-xs text-slate-600">
+                    <MapPin className="w-4 h-4 text-emerald-700 shrink-0" />
+                    <span className="truncate">
+                      Bölge:{' '}
                       <span className="font-semibold text-slate-900">
-                        {place.cuisineType || 'Belirtilmedi'}
+                        {place.locationArea || 'Belirtilmedi'}
                       </span>
                     </span>
                   </div>
-                  {canManagePlace && (
-                    <button
-                      type="button"
-                      onClick={() => setEditingCuisine(true)}
-                      className="min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium text-emerald-700 hover:bg-emerald-50 shrink-0"
-                    >
-                      {place.cuisineType ? 'Değiştir' : 'Seç'}
-                    </button>
-                  )}
                 </div>
               ) : (
-                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2.5">
-                  <div className="flex flex-wrap gap-1.5">
-                    {PRODUCT_TYPE_PRESETS.map((preset) => (
-                      <button
-                        key={preset}
-                        type="button"
-                        disabled={savingCuisine}
-                        onClick={() => void handleSaveCuisine(preset)}
-                        className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
-                          cuisineDraft.toLowerCase() === preset.toLowerCase()
-                            ? 'bg-emerald-700 text-white border-emerald-700'
-                            : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
-                        }`}
-                      >
-                        {preset}
-                      </button>
-                    ))}
+                <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-3">
+                  <div className="space-y-1.5">
+                    <span className="block text-xs font-semibold text-slate-700">Mekan Türü</span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
+                        <button
+                          key={cat}
+                          type="button"
+                          onClick={() => setCategoryDraft(cat)}
+                          className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
+                            categoryDraft === cat
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {CATEGORY_LABELS[cat]}
+                        </button>
+                      ))}
+                    </div>
                   </div>
-                  <div className="flex gap-2">
-                    <input
-                      type="text"
-                      maxLength={STORAGE_LIMITS.CUISINE_TYPE_MAX}
-                      value={cuisineDraft}
-                      onChange={(e) => setCuisineDraft(e.target.value)}
-                      placeholder="Özel ürün türü yazın..."
-                      className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-base sm:text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
-                    />
-                    <button
-                      type="button"
-                      disabled={savingCuisine}
-                      onClick={() => void handleSaveCuisine()}
-                      className="min-h-[40px] px-3 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50"
+
+                  <div className="space-y-1.5">
+                    <label
+                      htmlFor="detail-location-area"
+                      className="block text-xs font-semibold text-slate-700"
                     >
-                      Kaydet
-                    </button>
+                      Bölge / Semt / İlçe
+                    </label>
+                    <input
+                      id="detail-location-area"
+                      type="text"
+                      maxLength={STORAGE_LIMITS.LOCATION_AREA_MAX}
+                      value={locationDraft}
+                      onChange={(e) => setLocationDraft(e.target.value)}
+                      placeholder="Örn: Buca, İzmir veya Kemeraltı"
+                      className="w-full min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-base sm:text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    />
+                  </div>
+
+                  <div className="space-y-1.5">
+                    <span className="block text-xs font-semibold text-slate-700">
+                      Ürün Çeşidi (Birden fazla seçilebilir · {selectedCuisines.length}/
+                      {STORAGE_LIMITS.MAX_CUISINE_TYPES})
+                    </span>
+                    <div className="flex flex-wrap gap-1.5">
+                      {PRODUCT_TYPE_PRESETS.map((preset) => {
+                        const active = selectedCuisines.some(
+                          (c) => c.toLocaleLowerCase('tr') === preset.toLocaleLowerCase('tr')
+                        );
+                        return (
+                          <button
+                            key={preset}
+                            type="button"
+                            disabled={savingMeta}
+                            onClick={() => toggleCuisineTag(preset)}
+                            className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap ${
+                              active
+                                ? 'bg-emerald-700 text-white border-emerald-700'
+                                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-100'
+                            }`}
+                          >
+                            {preset}
+                          </button>
+                        );
+                      })}
+                      {selectedCuisines
+                        .filter(
+                          (c) =>
+                            !PRODUCT_TYPE_PRESETS.some(
+                              (preset) => preset.toLocaleLowerCase('tr') === c.toLocaleLowerCase('tr')
+                            )
+                        )
+                        .map((custom) => (
+                          <button
+                            key={custom}
+                            type="button"
+                            onClick={() => toggleCuisineTag(custom)}
+                            className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium bg-emerald-700 text-white border border-emerald-700 whitespace-nowrap"
+                          >
+                            <span>{custom}</span>
+                            <X className="w-3 h-3" />
+                          </button>
+                        ))}
+                    </div>
+
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        maxLength={STORAGE_LIMITS.CUISINE_TYPE_MAX}
+                        value={customCuisineInput}
+                        onChange={(e) => setCustomCuisineInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleAddCustomCuisine();
+                          }
+                        }}
+                        placeholder="Özel ürün ekle..."
+                        className="flex-1 min-h-[40px] px-3 py-1.5 rounded-xl border border-slate-300 bg-white text-base sm:text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                      />
+                      <button
+                        type="button"
+                        onClick={handleAddCustomCuisine}
+                        disabled={
+                          !customCuisineInput.trim() ||
+                          selectedCuisines.length >= STORAGE_LIMITS.MAX_CUISINE_TYPES
+                        }
+                        className="min-h-[40px] inline-flex items-center gap-1 px-3 rounded-xl border border-slate-200 bg-white text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:opacity-40"
+                      >
+                        <Plus className="w-3.5 h-3.5 text-emerald-700" />
+                        <span>Ekle</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex justify-end gap-2 pt-1">
                     <button
                       type="button"
                       onClick={() => {
-                        setEditingCuisine(false);
-                        setCuisineDraft(place.cuisineType || '');
+                        setEditingMeta(false);
+                        setSelectedCuisines(place.cuisineTypes || []);
+                        setLocationDraft(place.locationArea || '');
+                        setCategoryDraft(place.category);
+                        setCustomCuisineInput('');
                       }}
-                      className="min-h-[40px] px-2.5 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-600"
+                      className="min-h-[40px] px-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-600"
                     >
                       İptal
+                    </button>
+                    <button
+                      type="button"
+                      disabled={savingMeta}
+                      onClick={() => void handleSaveMeta()}
+                      className="min-h-[40px] px-4 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50 inline-flex items-center gap-1.5"
+                    >
+                      {savingMeta && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>Değişiklikleri Kaydet</span>
                     </button>
                   </div>
                 </div>
@@ -470,11 +756,46 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                   onSubmit={(e) => void handleSubmitReview(e)}
                   className="rounded-2xl bg-slate-50 border border-slate-200 p-4 space-y-3.5"
                 >
-                  <div>
-                    <span className="block text-xs font-semibold text-slate-700 mb-1">
-                      Puanınız
-                    </span>
-                    <StarRatingInput value={rating} onChange={setRating} />
+                  <div className="space-y-2">
+                    <div
+                      role="tablist"
+                      aria-label="Yorum puanlama türü"
+                      className="grid grid-cols-2 gap-1.5 p-1 bg-slate-200/70 rounded-xl"
+                    >
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={newReviewRatingTab === 'venue'}
+                        onClick={() => setNewReviewRatingTab('venue')}
+                        className={`min-h-[36px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                          newReviewRatingTab === 'venue'
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />
+                        <span>Lokanta Puanı · {rating}/5</span>
+                      </button>
+                      <button
+                        type="button"
+                        role="tab"
+                        aria-selected={newReviewRatingTab === 'price'}
+                        onClick={() => setNewReviewRatingTab('price')}
+                        className={`min-h-[36px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                          newReviewRatingTab === 'price'
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <BadgeTurkishLira className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                        <span>Fiyat Puanı · {priceRating}/5</span>
+                      </button>
+                    </div>
+                    {newReviewRatingTab === 'venue' ? (
+                      <StarRatingInput value={rating} onChange={setRating} />
+                    ) : (
+                      <PriceRatingInput value={priceRating} onChange={setPriceRating} />
+                    )}
                   </div>
 
                   <div>
@@ -512,6 +833,12 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                 </form>
               )}
 
+              {!showReviewForm && error && (
+                <p role="alert" className="text-xs text-rose-600 font-medium break-words">
+                  {error}
+                </p>
+              )}
+
               {loadingReviews ? (
                 <div className="py-6 flex justify-center text-slate-400">
                   <Loader2 className="w-5 h-5 animate-spin" />
@@ -522,59 +849,180 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                 <div className="divide-y divide-slate-100">
                   {reviews.map((rev) => {
                     const isOwnReview = !actor || rev.ownerId === actor.uid;
+                    const isEditingThis = editingReviewId === rev.id;
+
+                    if (isEditingThis && isOwnReview) {
+                      return (
+                        <form
+                          key={rev.id}
+                          onSubmit={(e) => void handleSaveReviewEdit(e, rev)}
+                          className="py-3 first:pt-0 space-y-3"
+                        >
+                          <div className="rounded-2xl bg-slate-50 border border-slate-200 p-3.5 space-y-3">
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="text-xs font-semibold text-slate-800">
+                                Yorumunuzu Düzenleyin
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setEditingReviewId(null)}
+                                className="text-xs font-medium text-slate-500 hover:text-slate-800"
+                              >
+                                Vazgeç
+                              </button>
+                            </div>
+                            <div className="space-y-2">
+                              <div
+                                role="tablist"
+                                aria-label="Düzenlenen yorum puanlama türü"
+                                className="grid grid-cols-2 gap-1.5 p-1 bg-slate-200/70 rounded-xl"
+                              >
+                                <button
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={editReviewRatingTab === 'venue'}
+                                  onClick={() => setEditReviewRatingTab('venue')}
+                                  className={`min-h-[36px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                                    editReviewRatingTab === 'venue'
+                                      ? 'bg-white text-slate-900 shadow-xs'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                >
+                                  <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500 shrink-0" />
+                                  <span>Lokanta · {editReviewRating}/5</span>
+                                </button>
+                                <button
+                                  type="button"
+                                  role="tab"
+                                  aria-selected={editReviewRatingTab === 'price'}
+                                  onClick={() => setEditReviewRatingTab('price')}
+                                  className={`min-h-[36px] inline-flex items-center justify-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                                    editReviewRatingTab === 'price'
+                                      ? 'bg-white text-slate-900 shadow-xs'
+                                      : 'text-slate-600 hover:text-slate-900'
+                                  }`}
+                                >
+                                  <BadgeTurkishLira className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                                  <span>
+                                    Fiyat {editReviewPriceRating ? `· ${editReviewPriceRating}/5` : ''}
+                                  </span>
+                                </button>
+                              </div>
+                              {editReviewRatingTab === 'venue' ? (
+                                <StarRatingInput value={editReviewRating} onChange={setEditReviewRating} />
+                              ) : (
+                                <PriceRatingInput
+                                  value={editReviewPriceRating}
+                                  onChange={setEditReviewPriceRating}
+                                />
+                              )}
+                            </div>
+                            <textarea
+                              required
+                              rows={3}
+                              maxLength={STORAGE_LIMITS.COMMENT_MAX}
+                              value={editReviewComment}
+                              onChange={(e) => setEditReviewComment(e.target.value)}
+                              className="w-full px-3 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                            />
+                            <PhotoUploader photos={editReviewPhotos} onChange={setEditReviewPhotos} />
+                            <div className="flex justify-end gap-2">
+                              <button
+                                type="button"
+                                onClick={() => setEditingReviewId(null)}
+                                className="min-h-[40px] px-3 rounded-xl border border-slate-200 bg-white text-xs font-medium text-slate-600"
+                              >
+                                İptal
+                              </button>
+                              <button
+                                type="submit"
+                                disabled={savingReviewEdit}
+                                className="min-h-[40px] px-4 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50 inline-flex items-center gap-1.5"
+                              >
+                                {savingReviewEdit && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                                <span>Güncelle</span>
+                              </button>
+                            </div>
+                          </div>
+                        </form>
+                      );
+                    }
+
                     return (
-                    <div key={rev.id} className="py-3 first:pt-0 space-y-2">
-                      <div className="flex items-center justify-between gap-3">
-                        <div className="flex flex-wrap items-center gap-1.5 min-w-0">
-                          <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-slate-900 tabular-nums">
-                            <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
-                            {rev.rating}.0
-                          </span>
-                          <span className="text-xs text-slate-400">·</span>
-                          <span className="text-xs font-semibold text-slate-800 truncate">
-                            {rev.authorName}
-                            {actor && rev.ownerId === actor.uid ? ' (Siz)' : ''}
-                          </span>
-                          <span className="text-xs text-slate-400">·</span>
-                          <span className="text-xs text-slate-500">{formatDate(rev.createdAt)}</span>
+                      <div key={rev.id} className="py-3 first:pt-0 space-y-2">
+                        <div className="flex items-center justify-between gap-3">
+                          <div className="flex flex-wrap items-center gap-1.5 min-w-0">
+                            <span className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-slate-900 tabular-nums">
+                              <Star className="w-3.5 h-3.5 fill-amber-500 text-amber-500" />
+                              {rev.rating}.0
+                            </span>
+                            {rev.priceRating && (
+                              <>
+                                <span className="text-xs text-slate-400">·</span>
+                                <span
+                                  title={`Fiyat Puanı: ${PRICE_RATING_LABELS[rev.priceRating]}`}
+                                  className="inline-flex items-center gap-1 font-mono text-xs font-semibold text-emerald-800 tabular-nums"
+                                >
+                                  <BadgeTurkishLira className="w-3.5 h-3.5 text-emerald-700" />
+                                  {rev.priceRating}.0
+                                </span>
+                              </>
+                            )}
+                            <span className="text-xs text-slate-400">·</span>
+                            <span className="text-xs font-semibold text-slate-800 truncate">
+                              {rev.authorName}
+                              {actor && rev.ownerId === actor.uid ? ' (Siz)' : ''}
+                            </span>
+                            <span className="text-xs text-slate-400">·</span>
+                            <span className="text-xs text-slate-500">{formatDate(rev.createdAt)}</span>
+                          </div>
+
+                          {isOwnReview && (
+                            <div className="flex items-center gap-1 shrink-0">
+                              <button
+                                type="button"
+                                aria-label="Yorumu düzenle"
+                                onClick={() => startEditingReview(rev)}
+                                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50"
+                              >
+                                <Pencil className="w-3.5 h-3.5" />
+                              </button>
+                              <button
+                                type="button"
+                                aria-label="Yorumu sil"
+                                onClick={() => void deleteReview(actor, place.id, rev.id)}
+                                className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            </div>
+                          )}
                         </div>
 
-                        {isOwnReview && (
-                          <button
-                            type="button"
-                            aria-label="Yorumu sil"
-                            onClick={() => void deleteReview(actor, place.id, rev.id)}
-                            className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50 shrink-0"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" />
-                          </button>
+                        <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
+                          {rev.comment}
+                        </p>
+
+                        {rev.photos && rev.photos.length > 0 && (
+                          <div className="grid grid-cols-3 gap-2 pt-1">
+                            {rev.photos.map((photo, pIdx) => (
+                              <button
+                                key={pIdx}
+                                type="button"
+                                onClick={() => setLightboxImage(photo)}
+                                className="aspect-[4/3] rounded-xl overflow-hidden border border-slate-200 bg-slate-100"
+                              >
+                                <img
+                                  src={photo}
+                                  alt={`Yorum fotoğrafı ${pIdx + 1}`}
+                                  referrerPolicy="no-referrer"
+                                  className="w-full h-full object-cover"
+                                />
+                              </button>
+                            ))}
+                          </div>
                         )}
                       </div>
-
-                      <p className="text-sm text-slate-700 leading-relaxed whitespace-pre-line">
-                        {rev.comment}
-                      </p>
-
-                      {rev.photos && rev.photos.length > 0 && (
-                        <div className="grid grid-cols-3 gap-2 pt-1">
-                          {rev.photos.map((photo, pIdx) => (
-                            <button
-                              key={pIdx}
-                              type="button"
-                              onClick={() => setLightboxImage(photo)}
-                              className="aspect-[4/3] rounded-xl overflow-hidden border border-slate-200 bg-slate-100"
-                            >
-                              <img
-                                src={photo}
-                                alt={`Yorum fotoğrafı ${pIdx + 1}`}
-                                referrerPolicy="no-referrer"
-                                className="w-full h-full object-cover"
-                              />
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
                     );
                   })}
                 </div>

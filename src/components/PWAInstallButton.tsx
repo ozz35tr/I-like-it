@@ -89,7 +89,7 @@ export const PWAInstallButton: React.FC<{ compact?: boolean }> = ({ compact = fa
                   </li>
                   <li>
                     Sağ üstten <strong>Ekle</strong> deyin. Ana ekranınızdaki{' '}
-                    <strong>MekanNotu</strong> ikonuyla tam ekran açılacaktır.
+                    <strong>Gourmand</strong> ikonuyla tam ekran açılacaktır.
                   </li>
                 </ol>
 

@@ -20,9 +20,9 @@ export default defineConfig(() => {
         manifest: {
           id: basePath,
           lang: 'tr',
-          name: 'MekanNotu — Kafe & Restoran Rehberim',
-          short_name: 'MekanNotu',
-          description: 'Gidilen kafe ve restoranları konumlarıyla ekleyip puanlayabileceğiniz, fotoğraf ve yorum paylaşabileceğiniz mobil rehber.',
+          name: 'Gourmand — Lezzet & Mekan Rehberim',
+          short_name: 'Gourmand',
+          description: 'Gidilen ve gidilecek restoran, esnaf lokantası ve kafeleri ürün çeşidi, bölge ve konumlarıyla kaydedip puanlayabileceğiniz mobil rehber.',
           theme_color: '#047857',
           background_color: '#f8fafc',
           display: 'standalone',

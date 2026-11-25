@@ -5,6 +5,7 @@ import {
   type ReviewItem,
   type VisitStatus,
 } from '../types/place';
+import { normalizeCategory, normalizeCuisineTags } from './placesService';
 
 export interface LegacyLocalPlace {
   id: string;
@@ -12,10 +13,17 @@ export interface LegacyLocalPlace {
   category?: string;
   visitStatus?: VisitStatus;
   cuisineType?: string;
+  cuisineTypes?: string[];
+  locationArea?: string;
+  lat?: number | null;
+  lng?: number | null;
   mapsUrl?: string;
   coverImage?: string;
   latestComment?: string;
   avgRating?: number;
+  avgPriceRating?: number;
+  priceRatingCount?: number;
+  priceRatingSum?: number;
   updatedAt?: number;
 }
 
@@ -23,6 +31,7 @@ export interface LegacyLocalReview {
   id: string;
   placeId: string;
   rating?: number;
+  priceRating?: number;
   comment: string;
   photos?: string[];
   createdAt?: number;
@@ -34,7 +43,9 @@ const STORE_PLACES = 'places';
 const STORE_REVIEWS = 'reviews';
 const LOCAL_OWNER_ID = 'local-device';
 const LOCAL_CHANGE_EVENT = 'mekannotu-local-db-changed';
+const LOCAL_HIDDEN_CHANGE_EVENT = 'gourmand-local-hidden-changed';
 const FALLBACK_STORAGE_KEY = 'mekannotu_local_fallback_v1';
+const LOCAL_HIDDEN_STORAGE_KEY = 'gourmand_hidden_wishlist_v1';
 
 interface FallbackStoreData {
   places: PlaceItem[];
@@ -42,6 +53,7 @@ interface FallbackStoreData {
 }
 
 let memoryFallback: FallbackStoreData = { places: [], reviews: [] };
+let hiddenMemoryFallback: string[] = [];
 
 function generateId(): string {
   if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
@@ -83,6 +95,45 @@ function writeFallbackStore(data: FallbackStoreData): void {
   } catch {
     // Ignore quota/private-mode localStorage error; memoryFallback keeps session state
   }
+}
+
+export function readLocalHiddenWishlistIds(): string[] {
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const raw = window.localStorage.getItem(LOCAL_HIDDEN_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw) as unknown;
+        if (Array.isArray(parsed)) {
+          return parsed.filter((x): x is string => typeof x === 'string');
+        }
+      }
+    }
+  } catch {
+    // Ignore
+  }
+  return hiddenMemoryFallback;
+}
+
+export function writeLocalHiddenWishlistIds(ids: string[]): void {
+  const clean = Array.from(new Set(ids.filter((x) => typeof x === 'string' && x.length > 0))).slice(0, 500);
+  hiddenMemoryFallback = clean;
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      window.localStorage.setItem(LOCAL_HIDDEN_STORAGE_KEY, JSON.stringify(clean));
+    }
+  } catch {
+    // Ignore
+  }
+  if (typeof window !== 'undefined') {
+    window.dispatchEvent(new Event(LOCAL_HIDDEN_CHANGE_EVENT));
+  }
+}
+
+export function subscribeLocalHiddenWishlistIds(onData: (ids: string[]) => void): () => void {
+  onData(readLocalHiddenWishlistIds());
+  const handler = () => onData(readLocalHiddenWishlistIds());
+  window.addEventListener(LOCAL_HIDDEN_CHANGE_EVENT, handler);
+  return () => window.removeEventListener(LOCAL_HIDDEN_CHANGE_EVENT, handler);
 }
 
 function openDb(): Promise<IDBDatabase> {
@@ -133,17 +184,18 @@ function txDone(tx: IDBTransaction): Promise<void> {
   });
 }
 
+function normalizePriceRating(raw: unknown): 1 | 2 | 3 | 4 | 5 | undefined {
+  if (raw === 1 || raw === 2 || raw === 3 || raw === 4 || raw === 5) {
+    return raw;
+  }
+  return undefined;
+}
+
 function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
   const now = Date.now();
-  const category: PlaceCategory =
-    raw.category === 'restaurant' ||
-    raw.category === 'cafe' ||
-    raw.category === 'bakery' ||
-    raw.category === 'bistro'
-      ? raw.category
-      : 'restaurant';
-
+  const category = normalizeCategory(raw.category);
   const visitStatus: VisitStatus = raw.visitStatus === 'wishlist' ? 'wishlist' : 'visited';
+  const { cuisineTypes, cuisineType } = normalizeCuisineTags(raw.cuisineTypes, raw.cuisineType);
 
   return {
     id: raw.id,
@@ -155,10 +207,14 @@ function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
     name: typeof raw.name === 'string' && raw.name ? raw.name : 'Mekan',
     category,
     visitStatus,
-    cuisineType:
-      typeof raw.cuisineType === 'string'
-        ? raw.cuisineType.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX)
+    cuisineType,
+    cuisineTypes,
+    locationArea:
+      typeof raw.locationArea === 'string'
+        ? raw.locationArea.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX)
         : '',
+    lat: typeof raw.lat === 'number' && Number.isFinite(raw.lat) ? raw.lat : null,
+    lng: typeof raw.lng === 'number' && Number.isFinite(raw.lng) ? raw.lng : null,
     mapsUrl: typeof raw.mapsUrl === 'string' ? raw.mapsUrl : '',
     coverImage: typeof raw.coverImage === 'string' ? raw.coverImage : '',
     latestComment: typeof raw.latestComment === 'string' ? raw.latestComment : '',
@@ -175,6 +231,18 @@ function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
         : typeof raw.avgRating === 'number'
           ? raw.avgRating
           : 0,
+    avgPriceRating:
+      typeof raw.avgPriceRating === 'number' && Number.isFinite(raw.avgPriceRating)
+        ? raw.avgPriceRating
+        : 0,
+    priceRatingCount:
+      typeof raw.priceRatingCount === 'number' && Number.isFinite(raw.priceRatingCount)
+        ? raw.priceRatingCount
+        : 0,
+    priceRatingSum:
+      typeof raw.priceRatingSum === 'number' && Number.isFinite(raw.priceRatingSum)
+        ? raw.priceRatingSum
+        : 0,
     createdAt: typeof raw.createdAt === 'number' && Number.isFinite(raw.createdAt) ? raw.createdAt : now,
     updatedAt: typeof raw.updatedAt === 'number' && Number.isFinite(raw.updatedAt) ? raw.updatedAt : now,
   };
@@ -186,6 +254,7 @@ function normalizeReview(raw: Partial<ReviewItem> & { id: string; placeId: strin
     raw.rating === 1 || raw.rating === 2 || raw.rating === 3 || raw.rating === 4 || raw.rating === 5
       ? raw.rating
       : 5;
+  const priceRating = normalizePriceRating(raw.priceRating);
 
   return {
     id: raw.id,
@@ -196,6 +265,7 @@ function normalizeReview(raw: Partial<ReviewItem> & { id: string; placeId: strin
         : 'Bu Cihaz',
     placeId: raw.placeId,
     rating,
+    ...(priceRating ? { priceRating } : {}),
     comment: typeof raw.comment === 'string' ? raw.comment : '',
     photos: Array.isArray(raw.photos)
       ? raw.photos.filter((x): x is string => typeof x === 'string').slice(0, STORAGE_LIMITS.MAX_PHOTOS)
@@ -293,8 +363,13 @@ export async function createLocalPlaceWithInitialReview(input: {
   category: PlaceCategory;
   visitStatus?: VisitStatus;
   cuisineType?: string;
+  cuisineTypes?: string[];
+  locationArea?: string;
+  lat?: number | null;
+  lng?: number | null;
   mapsUrl?: string;
   initialRating?: 1 | 2 | 3 | 4 | 5;
+  initialPriceRating?: 1 | 2 | 3 | 4 | 5;
   initialComment?: string;
   photos: string[];
 }): Promise<string> {
@@ -303,7 +378,10 @@ export async function createLocalPlaceWithInitialReview(input: {
   const visitStatus: VisitStatus = input.visitStatus === 'wishlist' ? 'wishlist' : 'visited';
 
   const cleanName = input.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX);
-  const cleanCuisine = (input.cuisineType || '').trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
+  const { cuisineTypes, cuisineType } = normalizeCuisineTags(input.cuisineTypes, input.cuisineType);
+  const cleanLocationArea = (input.locationArea || '').trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX);
+  const cleanLat = typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null;
+  const cleanLng = typeof input.lng === 'number' && Number.isFinite(input.lng) ? input.lng : null;
   const cleanMapsUrl = (input.mapsUrl || '').trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
   const cleanComment = (input.initialComment || '').trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
   const cleanPhotos = input.photos
@@ -316,15 +394,22 @@ export async function createLocalPlaceWithInitialReview(input: {
       ownerId: LOCAL_OWNER_ID,
       authorName: 'Bu Cihaz',
       name: cleanName,
-      category: input.category,
+      category: normalizeCategory(input.category),
       visitStatus: 'wishlist',
-      cuisineType: cleanCuisine,
+      cuisineType,
+      cuisineTypes,
+      locationArea: cleanLocationArea,
+      lat: cleanLat,
+      lng: cleanLng,
       mapsUrl: cleanMapsUrl,
       coverImage: cleanPhotos[0] || '',
       latestComment: cleanComment,
       avgRating: 0,
       reviewCount: 0,
       ratingSum: 0,
+      avgPriceRating: 0,
+      priceRatingCount: 0,
+      priceRatingSum: 0,
       createdAt: now,
       updatedAt: now,
     };
@@ -346,6 +431,7 @@ export async function createLocalPlaceWithInitialReview(input: {
 
   const reviewId = generateId();
   const rating: 1 | 2 | 3 | 4 | 5 = input.initialRating || 5;
+  const priceRating = normalizePriceRating(input.initialPriceRating);
   const finalComment = cleanComment.length >= STORAGE_LIMITS.COMMENT_MIN ? cleanComment : 'Ziyaret notu';
 
   const place: PlaceItem = {
@@ -353,15 +439,22 @@ export async function createLocalPlaceWithInitialReview(input: {
     ownerId: LOCAL_OWNER_ID,
     authorName: 'Bu Cihaz',
     name: cleanName,
-    category: input.category,
+    category: normalizeCategory(input.category),
     visitStatus: 'visited',
-    cuisineType: cleanCuisine,
+    cuisineType,
+    cuisineTypes,
+    locationArea: cleanLocationArea,
+    lat: cleanLat,
+    lng: cleanLng,
     mapsUrl: cleanMapsUrl,
     coverImage: cleanPhotos[0] || '',
     latestComment: finalComment,
     avgRating: rating,
     reviewCount: 1,
     ratingSum: rating,
+    avgPriceRating: priceRating ?? 0,
+    priceRatingCount: priceRating ? 1 : 0,
+    priceRatingSum: priceRating ?? 0,
     createdAt: now,
     updatedAt: now,
   };
@@ -372,6 +465,7 @@ export async function createLocalPlaceWithInitialReview(input: {
     authorName: 'Bu Cihaz',
     placeId,
     rating,
+    ...(priceRating ? { priceRating } : {}),
     comment: finalComment,
     photos: cleanPhotos,
     createdAt: now,
@@ -433,12 +527,40 @@ export async function updateLocalPlaceMapsUrl(placeId: string, mapsUrl: string):
   notifyLocalChange();
 }
 
-export async function updateLocalPlaceCuisineType(
+export async function updateLocalPlaceTagsAndLocation(
   placeId: string,
-  cuisineType: string
+  input: {
+    cuisineTypes?: string[];
+    cuisineType?: string;
+    locationArea?: string;
+    category?: PlaceCategory;
+    lat?: number | null;
+    lng?: number | null;
+  }
 ): Promise<void> {
-  const cleanCuisine = cuisineType.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
   const now = Date.now();
+
+  const applyUpdate = (place: PlaceItem): PlaceItem => {
+    const next = { ...place, updatedAt: now };
+    if (input.cuisineTypes !== undefined || input.cuisineType !== undefined) {
+      const normalized = normalizeCuisineTags(input.cuisineTypes, input.cuisineType);
+      next.cuisineTypes = normalized.cuisineTypes;
+      next.cuisineType = normalized.cuisineType;
+    }
+    if (input.locationArea !== undefined) {
+      next.locationArea = input.locationArea.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX);
+    }
+    if (input.category !== undefined) {
+      next.category = normalizeCategory(input.category);
+    }
+    if (input.lat !== undefined) {
+      next.lat = typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null;
+    }
+    if (input.lng !== undefined) {
+      next.lng = typeof input.lng === 'number' && Number.isFinite(input.lng) ? input.lng : null;
+    }
+    return next;
+  };
 
   try {
     const db = await openDb();
@@ -452,10 +574,7 @@ export async function updateLocalPlaceCuisineType(
           reject(new Error('Mekan bulunamadı.'));
           return;
         }
-        const updated = normalizePlace(existing);
-        updated.cuisineType = cleanCuisine;
-        updated.updatedAt = now;
-        store.put(updated);
+        store.put(applyUpdate(normalizePlace(existing)));
       };
       getReq.onerror = () => reject(getReq.error || new Error('Mekan güncellenemedi.'));
       tx.oncomplete = () => resolve();
@@ -467,7 +586,7 @@ export async function updateLocalPlaceCuisineType(
     const data = readFallbackStore();
     const idx = data.places.findIndex((p) => p.id === placeId);
     if (idx === -1) throw new Error('Mekan bulunamadı.');
-    data.places[idx] = { ...normalizePlace(data.places[idx]), cuisineType: cleanCuisine, updatedAt: now };
+    data.places[idx] = applyUpdate(normalizePlace(data.places[idx]));
     writeFallbackStore(data);
   }
 
@@ -477,11 +596,13 @@ export async function updateLocalPlaceCuisineType(
 export async function addLocalReviewToPlace(input: {
   placeId: string;
   rating: 1 | 2 | 3 | 4 | 5;
+  priceRating?: 1 | 2 | 3 | 4 | 5;
   comment: string;
   photos: string[];
 }): Promise<void> {
   const now = Date.now();
   const cleanComment = input.comment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
+  const cleanPriceRating = normalizePriceRating(input.priceRating);
   const cleanPhotos = input.photos
     .filter((p) => typeof p === 'string' && p.length <= 160000)
     .slice(0, STORAGE_LIMITS.MAX_PHOTOS);
@@ -492,6 +613,7 @@ export async function addLocalReviewToPlace(input: {
     authorName: 'Bu Cihaz',
     placeId: input.placeId,
     rating: input.rating,
+    ...(cleanPriceRating ? { priceRating: cleanPriceRating } : {}),
     comment: cleanComment,
     photos: cleanPhotos,
     createdAt: now,
@@ -518,6 +640,16 @@ export async function addLocalReviewToPlace(input: {
         place.reviewCount = nextCount;
         place.ratingSum = nextSum;
         place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
+
+        const prevPriceCount = place.priceRatingCount ?? 0;
+        const prevPriceSum = place.priceRatingSum ?? 0;
+        const nextPriceCount = prevPriceCount + (cleanPriceRating ? 1 : 0);
+        const nextPriceSum = prevPriceSum + (cleanPriceRating ?? 0);
+        place.priceRatingCount = nextPriceCount;
+        place.priceRatingSum = nextPriceSum;
+        place.avgPriceRating =
+          nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
         place.latestComment = cleanComment;
         place.coverImage = place.coverImage || cleanPhotos[0] || '';
         place.visitStatus = 'visited';
@@ -542,12 +674,145 @@ export async function addLocalReviewToPlace(input: {
     place.reviewCount = nextCount;
     place.ratingSum = nextSum;
     place.avgRating = Math.round((nextSum / nextCount) * 100) / 100;
+
+    const prevPriceCount = place.priceRatingCount ?? 0;
+    const prevPriceSum = place.priceRatingSum ?? 0;
+    const nextPriceCount = prevPriceCount + (cleanPriceRating ? 1 : 0);
+    const nextPriceSum = prevPriceSum + (cleanPriceRating ?? 0);
+    place.priceRatingCount = nextPriceCount;
+    place.priceRatingSum = nextPriceSum;
+    place.avgPriceRating =
+      nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
     place.latestComment = cleanComment;
     place.coverImage = place.coverImage || cleanPhotos[0] || '';
     place.visitStatus = 'visited';
     place.updatedAt = now;
     data.places[idx] = place;
     data.reviews.unshift(review);
+    writeFallbackStore(data);
+  }
+
+  notifyLocalChange();
+}
+
+export async function updateLocalReviewInPlace(input: {
+  placeId: string;
+  reviewId: string;
+  rating: 1 | 2 | 3 | 4 | 5;
+  priceRating?: 1 | 2 | 3 | 4 | 5;
+  comment: string;
+  photos: string[];
+}): Promise<void> {
+  const now = Date.now();
+  const cleanComment = input.comment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
+  const cleanPriceRating = normalizePriceRating(input.priceRating);
+  const cleanPhotos = input.photos
+    .filter((p) => typeof p === 'string' && p.length <= 160000)
+    .slice(0, STORAGE_LIMITS.MAX_PHOTOS);
+
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction([STORE_PLACES, STORE_REVIEWS], 'readwrite');
+      const placeStore = tx.objectStore(STORE_PLACES);
+      const reviewStore = tx.objectStore(STORE_REVIEWS);
+
+      const listReq = reviewStore.index('placeId').getAll(input.placeId);
+      listReq.onsuccess = () => {
+        const allRaw = (listReq.result || []) as Array<
+          Partial<ReviewItem> & { id: string; placeId: string }
+        >;
+        const updatedReviews = allRaw
+          .map(normalizeReview)
+          .map((r) =>
+            r.id === input.reviewId
+              ? {
+                  ...r,
+                  rating: input.rating,
+                  ...(cleanPriceRating ? { priceRating: cleanPriceRating } : {}),
+                  comment: cleanComment,
+                  photos: cleanPhotos,
+                  updatedAt: now,
+                }
+              : r
+          )
+          .sort((a, b) => b.createdAt - a.createdAt);
+
+        const edited = updatedReviews.find((r) => r.id === input.reviewId);
+        if (edited) reviewStore.put(edited);
+
+        const placeReq = placeStore.get(input.placeId);
+        placeReq.onsuccess = () => {
+          const existing = placeReq.result as (Partial<PlaceItem> & { id: string }) | undefined;
+          if (existing) {
+            const place = normalizePlace(existing);
+            const nextCount = updatedReviews.length;
+            const nextSum = updatedReviews.reduce((acc, r) => acc + r.rating, 0);
+            place.reviewCount = nextCount;
+            place.ratingSum = nextSum;
+            place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
+
+            const priceReviews = updatedReviews.filter((r) => typeof r.priceRating === 'number');
+            const nextPriceCount = priceReviews.length;
+            const nextPriceSum = priceReviews.reduce((acc, r) => acc + (r.priceRating || 0), 0);
+            place.priceRatingCount = nextPriceCount;
+            place.priceRatingSum = nextPriceSum;
+            place.avgPriceRating =
+              nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
+            place.latestComment = updatedReviews[0]?.comment ?? '';
+            place.coverImage = updatedReviews.find((r) => r.photos.length > 0)?.photos[0] ?? '';
+            place.updatedAt = now;
+            placeStore.put(place);
+          }
+        };
+      };
+      listReq.onerror = () => reject(listReq.error || new Error('Yorum güncellenemedi.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch {
+    const data = readFallbackStore();
+    data.reviews = data.reviews.map((r) =>
+      r.id === input.reviewId
+        ? {
+            ...normalizeReview(r),
+            rating: input.rating,
+            ...(cleanPriceRating ? { priceRating: cleanPriceRating } : {}),
+            comment: cleanComment,
+            photos: cleanPhotos,
+            updatedAt: now,
+          }
+        : r
+    );
+    const updatedReviews = data.reviews
+      .filter((r) => r.placeId === input.placeId)
+      .map(normalizeReview)
+      .sort((a, b) => b.createdAt - a.createdAt);
+    const idx = data.places.findIndex((p) => p.id === input.placeId);
+    if (idx !== -1) {
+      const place = normalizePlace(data.places[idx]);
+      const nextCount = updatedReviews.length;
+      const nextSum = updatedReviews.reduce((acc, r) => acc + r.rating, 0);
+      place.reviewCount = nextCount;
+      place.ratingSum = nextSum;
+      place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
+
+      const priceReviews = updatedReviews.filter((r) => typeof r.priceRating === 'number');
+      const nextPriceCount = priceReviews.length;
+      const nextPriceSum = priceReviews.reduce((acc, r) => acc + (r.priceRating || 0), 0);
+      place.priceRatingCount = nextPriceCount;
+      place.priceRatingSum = nextPriceSum;
+      place.avgPriceRating =
+        nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
+      place.latestComment = updatedReviews[0]?.comment ?? '';
+      place.coverImage = updatedReviews.find((r) => r.photos.length > 0)?.photos[0] ?? '';
+      place.updatedAt = now;
+      data.places[idx] = place;
+    }
     writeFallbackStore(data);
   }
 
@@ -583,6 +848,15 @@ export async function deleteLocalReviewFromPlace(placeId: string, reviewId: stri
             place.reviewCount = nextCount;
             place.ratingSum = nextSum;
             place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
+
+            const priceReviews = remaining.filter((r) => typeof r.priceRating === 'number');
+            const nextPriceCount = priceReviews.length;
+            const nextPriceSum = priceReviews.reduce((acc, r) => acc + (r.priceRating || 0), 0);
+            place.priceRatingCount = nextPriceCount;
+            place.priceRatingSum = nextPriceSum;
+            place.avgPriceRating =
+              nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
             place.latestComment = remaining[0]?.comment ?? '';
             place.updatedAt = Date.now();
             placeStore.put(place);
@@ -609,6 +883,15 @@ export async function deleteLocalReviewFromPlace(placeId: string, reviewId: stri
       place.reviewCount = nextCount;
       place.ratingSum = nextSum;
       place.avgRating = nextCount > 0 ? Math.round((nextSum / nextCount) * 100) / 100 : 0;
+
+      const priceReviews = remaining.filter((r) => typeof r.priceRating === 'number');
+      const nextPriceCount = priceReviews.length;
+      const nextPriceSum = priceReviews.reduce((acc, r) => acc + (r.priceRating || 0), 0);
+      place.priceRatingCount = nextPriceCount;
+      place.priceRatingSum = nextPriceSum;
+      place.avgPriceRating =
+        nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
       place.latestComment = remaining[0]?.comment ?? '';
       place.updatedAt = Date.now();
       data.places[idx] = place;
@@ -665,7 +948,7 @@ export async function exportDatabaseBackup(): Promise<{
     ]);
 
     return {
-      version: 4,
+      version: 5,
       exportedAt: new Date().toISOString(),
       places,
       reviews,
@@ -673,7 +956,7 @@ export async function exportDatabaseBackup(): Promise<{
   } catch {
     const data = readFallbackStore();
     return {
-      version: 4,
+      version: 5,
       exportedAt: new Date().toISOString(),
       places: data.places,
       reviews: data.reviews,
@@ -692,18 +975,20 @@ export async function importBackupToLocal(jsonText: string): Promise<number> {
 
   const reviewsByPlace = new Map<
     string,
-    Array<{ rating: 1 | 2 | 3 | 4 | 5; comment: string; photos: string[] }>
+    Array<{ rating: 1 | 2 | 3 | 4 | 5; priceRating?: 1 | 2 | 3 | 4 | 5; comment: string; photos: string[] }>
   >();
 
   if (Array.isArray(parsed.reviews)) {
     for (const r of parsed.reviews) {
       if (r && typeof r.placeId === 'string' && typeof r.comment === 'string') {
         const list = reviewsByPlace.get(r.placeId) || [];
+        const priceRating = normalizePriceRating(r.priceRating);
         list.push({
           rating:
             r.rating === 1 || r.rating === 2 || r.rating === 3 || r.rating === 4 || r.rating === 5
               ? r.rating
               : 5,
+          ...(priceRating ? { priceRating } : {}),
           comment: r.comment,
           photos: Array.isArray(r.photos) ? r.photos.slice(0, STORAGE_LIMITS.MAX_PHOTOS) : [],
         });
@@ -723,23 +1008,45 @@ export async function importBackupToLocal(jsonText: string): Promise<number> {
     const rating: 1 | 2 | 3 | 4 | 5 =
       firstRev?.rating ||
       (avg >= 4.5 ? 5 : avg >= 3.5 ? 4 : avg >= 2.5 ? 3 : avg >= 1.5 ? 2 : 1);
+    const derivedPriceRating: 1 | 2 | 3 | 4 | 5 | undefined =
+      firstRev?.priceRating ||
+      (typeof p.avgPriceRating === 'number' && p.avgPriceRating > 0
+        ? p.avgPriceRating >= 4.5
+          ? 5
+          : p.avgPriceRating >= 3.5
+            ? 4
+            : p.avgPriceRating >= 2.5
+              ? 3
+              : p.avgPriceRating >= 1.5
+                ? 2
+                : 1
+        : undefined);
 
-    await createLocalPlaceWithInitialReview({
+    const placeId = await createLocalPlaceWithInitialReview({
       name: p.name,
-      category:
-        p.category === 'restaurant' ||
-        p.category === 'cafe' ||
-        p.category === 'bakery' ||
-        p.category === 'bistro'
-          ? p.category
-          : 'restaurant',
+      category: normalizeCategory(p.category),
       visitStatus: isWishlist ? 'wishlist' : 'visited',
       cuisineType: typeof p.cuisineType === 'string' ? p.cuisineType : '',
+      cuisineTypes: Array.isArray(p.cuisineTypes) ? p.cuisineTypes : undefined,
+      locationArea: typeof p.locationArea === 'string' ? p.locationArea : '',
+      lat: typeof p.lat === 'number' ? p.lat : null,
+      lng: typeof p.lng === 'number' ? p.lng : null,
       mapsUrl: typeof p.mapsUrl === 'string' ? p.mapsUrl : '',
       initialRating: rating,
+      initialPriceRating: isWishlist ? undefined : derivedPriceRating,
       initialComment: isWishlist ? comment : comment.length >= 2 ? comment : 'Ziyaret notu',
       photos: firstRev?.photos || (p.coverImage ? [p.coverImage] : []),
     });
+
+    for (const extraRev of relatedReviews.slice(1)) {
+      await addLocalReviewToPlace({
+        placeId,
+        rating: extraRev.rating,
+        priceRating: extraRev.priceRating,
+        comment: extraRev.comment.trim().length >= 2 ? extraRev.comment : 'Ziyaret notu',
+        photos: extraRev.photos,
+      });
+    }
     imported += 1;
   }
 
