@@ -184,14 +184,12 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Shared Collaborative Places & Reviews
+    // Shared Collaborative Places & Reviews (Readable publicly without sign-in; writes require verified auth)
     match /places/{placeId} {
       allow get: if isValidId(placeId) &&
-        isVerifiedSignedIn() &&
         existing().visibility == 'shared';
 
-      allow list: if isVerifiedSignedIn() &&
-        resource.data.visibility == 'shared';
+      allow list: if resource.data.visibility == 'shared';
 
       allow create: if isValidId(placeId) &&
         isVerifiedSignedIn() &&
@@ -258,11 +256,9 @@ service cloud.firestore {
       match /reviews/{reviewId} {
         allow get: if isValidId(placeId) &&
           isValidId(reviewId) &&
-          isVerifiedSignedIn() &&
           existing().visibility == 'shared';
 
-        allow list: if isVerifiedSignedIn() &&
-          resource.data.visibility == 'shared';
+        allow list: if resource.data.visibility == 'shared';
 
         allow create: if isValidId(placeId) &&
           isValidId(reviewId) &&

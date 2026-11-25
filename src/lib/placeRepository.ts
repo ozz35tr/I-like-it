@@ -40,6 +40,32 @@ export interface CloudActor {
   authorName: string;
 }
 
+export function isLocalDeviceRecord(ownerId?: string | null): boolean {
+  return ownerId === 'local-device';
+}
+
+function mergePlaces(cloudPlaces: PlaceItem[], localPlaces: PlaceItem[]): PlaceItem[] {
+  const map = new Map<string, PlaceItem>();
+  for (const item of localPlaces) {
+    map.set(item.id, item);
+  }
+  for (const item of cloudPlaces) {
+    map.set(item.id, item);
+  }
+  return Array.from(map.values()).sort((a, b) => b.updatedAt - a.updatedAt);
+}
+
+function mergeReviews(cloudReviews: ReviewItem[], localReviews: ReviewItem[]): ReviewItem[] {
+  const map = new Map<string, ReviewItem>();
+  for (const item of localReviews) {
+    map.set(item.id, item);
+  }
+  for (const item of cloudReviews) {
+    map.set(item.id, item);
+  }
+  return Array.from(map.values()).sort((a, b) => b.createdAt - a.createdAt);
+}
+
 export function subscribeUserOrLocalPlaces(
   actor: CloudActor | null | undefined,
   onData: (places: PlaceItem[]) => void,
@@ -48,7 +74,50 @@ export function subscribeUserOrLocalPlaces(
   if (actor) {
     return subscribePlaces(onData, onError);
   }
-  return subscribeLocalPlaces(onData, onError);
+
+  let cloudPlaces: PlaceItem[] = [];
+  let localPlaces: PlaceItem[] = [];
+  let cloudReady = false;
+  let localReady = false;
+
+  const emit = () => {
+    if (cloudReady || localReady) {
+      onData(mergePlaces(cloudPlaces, localPlaces));
+    }
+  };
+
+  const unsubCloud = subscribePlaces(
+    (items) => {
+      cloudPlaces = items;
+      cloudReady = true;
+      emit();
+    },
+    (err) => {
+      cloudReady = true;
+      if (localReady && localPlaces.length > 0) {
+        emit();
+      } else {
+        onError(err);
+      }
+    }
+  );
+
+  const unsubLocal = subscribeLocalPlaces(
+    (items) => {
+      localPlaces = items;
+      localReady = true;
+      emit();
+    },
+    () => {
+      localReady = true;
+      emit();
+    }
+  );
+
+  return () => {
+    unsubCloud();
+    unsubLocal();
+  };
 }
 
 export function subscribeUserOrLocalPlaceReviews(
@@ -60,7 +129,52 @@ export function subscribeUserOrLocalPlaceReviews(
   if (actor) {
     return subscribePlaceReviews(placeId, onData, onError);
   }
-  return subscribeLocalPlaceReviews(placeId, onData, onError);
+
+  let cloudReviews: ReviewItem[] = [];
+  let localReviews: ReviewItem[] = [];
+  let cloudReady = false;
+  let localReady = false;
+
+  const emit = () => {
+    if (cloudReady || localReady) {
+      onData(mergeReviews(cloudReviews, localReviews));
+    }
+  };
+
+  const unsubCloud = subscribePlaceReviews(
+    placeId,
+    (items) => {
+      cloudReviews = items;
+      cloudReady = true;
+      emit();
+    },
+    (err) => {
+      cloudReady = true;
+      if (localReady && localReviews.length > 0) {
+        emit();
+      } else {
+        onError(err);
+      }
+    }
+  );
+
+  const unsubLocal = subscribeLocalPlaceReviews(
+    placeId,
+    (items) => {
+      localReviews = items;
+      localReady = true;
+      emit();
+    },
+    () => {
+      localReady = true;
+      emit();
+    }
+  );
+
+  return () => {
+    unsubCloud();
+    unsubLocal();
+  };
 }
 
 export function subscribeHiddenWishlistIds(
@@ -171,7 +285,30 @@ export async function exportBackup(actor: CloudActor | null | undefined) {
   if (actor) {
     return exportFirestoreBackup();
   }
-  return exportDatabaseBackup();
+  const [cloud, local] = await Promise.all([
+    exportFirestoreBackup().catch(() => ({
+      version: 5,
+      exportedAt: new Date().toISOString(),
+      places: [] as PlaceItem[],
+      reviews: [] as ReviewItem[],
+    })),
+    exportDatabaseBackup(),
+  ]);
+
+  const placeMap = new Map<string, unknown>();
+  for (const p of local.places) placeMap.set(p.id, p);
+  for (const p of cloud.places) placeMap.set(p.id, p);
+
+  const reviewMap = new Map<string, unknown>();
+  for (const r of local.reviews) reviewMap.set(r.id, r);
+  for (const r of cloud.reviews) reviewMap.set(r.id, r);
+
+  return {
+    version: 5,
+    exportedAt: new Date().toISOString(),
+    places: Array.from(placeMap.values()),
+    reviews: Array.from(reviewMap.values()),
+  };
 }
 
 export async function importBackup(

@@ -53,6 +53,7 @@ import {
 import {
   exportBackup,
   importBackup,
+  isLocalDeviceRecord,
   removePlace,
   subscribeHiddenWishlistIds,
   subscribeUserOrLocalPlaces,
@@ -949,15 +950,15 @@ export default function App() {
                 type="button"
                 onClick={() => void handleSignIn()}
                 disabled={signingIn}
-                title="Ortak listeye katılmak ve yorumları görmek için Google ile bağlan"
-                className="min-h-[40px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 hover:text-slate-900 hover:bg-slate-50 text-xs font-medium whitespace-nowrap shrink-0 disabled:opacity-50"
+                title="Yeni mekan/yorum eklemek ve listeni senkronize etmek için Google ile giriş yap"
+                className="min-h-[40px] inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-700 hover:text-slate-900 hover:bg-slate-50 text-xs font-semibold whitespace-nowrap shrink-0 disabled:opacity-50"
               >
                 {signingIn ? (
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-emerald-700" />
                 ) : (
                   <Users className="w-3.5 h-3.5 text-emerald-700" />
                 )}
-                <span className="hidden sm:inline">Ortak Liste</span>
+                <span>Giriş Yap</span>
               </button>
             )}
           </div>
@@ -1084,7 +1085,7 @@ export default function App() {
               <span className="font-mono font-semibold text-slate-900">
                 {sortedAndFilteredPlaces.length}
               </span>{' '}
-              mekan · {actor ? 'Ortak liste · Bulut senkronize' : 'Bu cihazda kayıtlı'}
+              mekan · {actor ? 'Ortak liste · Bulut senkronize' : 'Ortak liste · Giriş yapmadan görüntüleniyor'}
             </p>
           </div>
 
@@ -1490,7 +1491,9 @@ export default function App() {
                   <tbody className="divide-y divide-slate-100 text-sm">
                     {sortedAndFilteredPlaces.map(({ place, distanceKm }) => {
                       const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
-                      const canDeletePlace = !actor || place.ownerId === actor.uid;
+                      const canDeletePlace = actor
+                        ? place.ownerId === actor.uid
+                        : isLocalDeviceRecord(place.ownerId);
                       const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
                       const isHidden = hiddenWishlistSet.has(place.id);
                       return (
@@ -1522,12 +1525,10 @@ export default function App() {
                                   <p className="text-xs text-slate-500">
                                     {CATEGORY_LABELS[place.category]}
                                   </p>
-                                  {actor && (
-                                    <p className="text-[11px] text-slate-400 truncate max-w-[190px]">
-                                      Ekleyen: {place.authorName}
-                                      {place.ownerId === actor.uid ? ' (Siz)' : ''}
-                                    </p>
-                                  )}
+                                  <p className="text-[11px] text-slate-400 truncate max-w-[190px]">
+                                    Ekleyen: {place.authorName}
+                                    {actor && place.ownerId === actor.uid ? ' (Siz)' : ''}
+                                  </p>
                                 </div>
                               </div>
                             </button>
@@ -1744,7 +1745,9 @@ export default function App() {
               <div className="rounded-2xl bg-white border border-slate-200 divide-y divide-slate-100 overflow-hidden">
                 {sortedAndFilteredPlaces.map(({ place, distanceKm }) => {
                   const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
-                  const canDeletePlace = !actor || place.ownerId === actor.uid;
+                  const canDeletePlace = actor
+                    ? place.ownerId === actor.uid
+                    : isLocalDeviceRecord(place.ownerId);
                   const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
                   const isHidden = hiddenWishlistSet.has(place.id);
                   return (
@@ -1773,12 +1776,10 @@ export default function App() {
                               {distanceKm !== null ? ` · ${formatDistanceLabel(distanceKm)}` : ''}
                               {place.cuisineType ? ` · ${place.cuisineType}` : ''}
                             </p>
-                            {actor && (
-                              <p className="text-[11px] text-slate-400 truncate">
-                                Ekleyen: {place.authorName}
-                                {place.ownerId === actor.uid ? ' (Siz)' : ''}
-                              </p>
-                            )}
+                            <p className="text-[11px] text-slate-400 truncate">
+                              Ekleyen: {place.authorName}
+                              {actor && place.ownerId === actor.uid ? ' (Siz)' : ''}
+                            </p>
                           </div>
                         </button>
 
@@ -1893,6 +1894,7 @@ export default function App() {
           actor={actor}
           defaultVisitStatus={statusFilter === 'wishlist' ? 'wishlist' : 'visited'}
           knownRegions={knownRegions}
+          onRequestSignIn={() => void handleSignIn()}
           onClose={() => setShowAddModal(false)}
           onCreated={(createdId, createdStatus, hideInWishlist) => {
             setShowAddModal(false);
@@ -1912,6 +1914,7 @@ export default function App() {
           place={liveDetailPlace}
           isHiddenInWishlist={hiddenWishlistSet.has(liveDetailPlace.id)}
           onToggleHiddenWishlist={handleToggleHiddenWishlist}
+          onRequestSignIn={() => void handleSignIn()}
           onClose={() => setDetailPlace(null)}
           onDeleted={() => setDetailPlace(null)}
         />

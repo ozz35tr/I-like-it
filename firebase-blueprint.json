@@ -2,7 +2,7 @@
   "entities": {
     "Place": {
       "title": "Place",
-      "description": "A visited or wishlist restaurant, lokanta, cafe, pastane, büfe, bar, bakery, or bistro shared across signed-in users with author attribution, product tags, location area, optional coordinates, and aggregated star rating.",
+      "description": "A visited or wishlist restaurant, lokanta, cafe, pastane, büfe, bar, bakery, or bistro shared publicly for reading with author attribution, product tags, location area, optional coordinates, and aggregated star/price ratings.",
       "type": "object",
       "properties": {
         "ownerId": {
@@ -231,7 +231,7 @@
   "firestore": {
     "/places/{placeId}": {
       "schema": { "$ref": "#/entities/Place" },
-      "description": "Shared community list of visited and wishlist places visible to all verified signed-in users."
+      "description": "Shared community list of visited and wishlist places readable by all visitors (including unauthenticated first-time users) and writable by verified signed-in users."
     },
     "/places/{placeId}/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/Review" },

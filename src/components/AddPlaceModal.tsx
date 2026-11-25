@@ -32,6 +32,7 @@ interface AddPlaceModalProps {
   actor?: CloudActor | null;
   defaultVisitStatus?: VisitStatus;
   knownRegions?: string[];
+  onRequestSignIn?: () => void;
   onClose: () => void;
   onCreated: (placeId: string, visitStatus: VisitStatus, hideInWishlist?: boolean) => void;
 }
@@ -40,6 +41,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   actor,
   defaultVisitStatus = 'visited',
   knownRegions = [],
+  onRequestSignIn,
   onClose,
   onCreated,
 }) => {
@@ -279,6 +281,23 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
         </div>
 
         <form onSubmit={(e) => void handleSubmit(e)} className="flex-1 overflow-y-auto p-5 space-y-4">
+          {!actor && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950">
+              <span>
+                Giriş yapmadığınız için bu kayıt yalnızca bu cihazda tutulur. Ortak listeye eklemek için giriş yapabilirsiniz.
+              </span>
+              {onRequestSignIn && (
+                <button
+                  type="button"
+                  onClick={onRequestSignIn}
+                  className="font-semibold text-emerald-800 hover:underline shrink-0"
+                >
+                  Google ile Giriş Yap
+                </button>
+              )}
+            </div>
+          )}
+
           {/* Liste Durumu: Gidilenler vs Gidilecekler */}
           <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
             <button

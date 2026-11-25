@@ -1,7 +1,7 @@
 # Security Specification — Gourmand Shared Firestore Rules
 
 ## 1. Data Invariants
-1. **Verified Authentication Required:** Only authenticated users with `request.auth.token.email_verified == true` may read or write shared `/places/{placeId}`, `/places/{placeId}/reviews/{reviewId}`, and private `/users/{userId}/preferences/{prefId}` documents.
+1. **Public Read on Shared Community Entries, Verified Auth Required for Writes & Private Data:** Any visitor (including first-time unauthenticated users) may `get` or `list` shared non-PII `/places/{placeId}` and `/places/{placeId}/reviews/{reviewId}` documents (`visibility == 'shared'`). All `create`, `update`, and `delete` operations on `/places` and `/reviews`, as well as all reads/writes under `/users/{userId}/preferences/{prefId}` and legacy `/users/{userId}/places/{placeId}`, strictly require `request.auth.token.email_verified == true`.
 2. **Non-PII Author Attribution:** Every shared `Place` and `Review` records `authorName` (`1..60` chars, display name) without storing raw email addresses or phone numbers.
 3. **Identity Integrity & Tiered Ownership:**
    - `ownerId` must equal `request.auth.uid` on create and is immutable on update.
@@ -11,13 +11,13 @@
 4. **Strict Per-User Review Ownership:**
    - Only the review author (`existing().ownerId == request.auth.uid`) may `update` (`rating`, `priceRating`, `comment`, `photos`, `updatedAt`) or `delete` their own review. Other signed-in users receive `PERMISSION_DENIED`.
 5. **Private Wishlist Hide/Show Preferences:**
-   - `/users/{userId}/preferences/{prefId}` is strictly restricted (`get`, `create`, `update`, `delete`) to `isVerifiedOwner(userId)` (`list` disabled unless `resource.data.ownerId == request.auth.uid`).
+   - `/users/{userId}/preferences/{prefId}` is strictly restricted (`get`, `create`, `update`, `delete`) to `isVerifiedOwner(userId)` (`list` disabled unless `resource.data.ownerId == request.auth.uid`). Unauthenticated or cross-user reads return `PERMISSION_DENIED`.
 6. **Master Gate & Atomicity:** A `Review` create or update under `/places/{placeId}/reviews/{reviewId}` verifies the shared parent `Place` via `getAfter(...)`.
 7. **Query Enforcement:** All shared `allow list` rules explicitly enforce `resource.data.visibility == 'shared'`.
 8. **Temporal Integrity & Strict Schema:** `createdAt` and `updatedAt` are bound to `request.time`; `hasAll` + `hasOnly` reject ghost fields; all IDs match `^[a-zA-Z0-9_\-]+$` (`1..128`).
 
 ## 2. "Dirty Dozen" Attack Payloads (All Must Return PERMISSION_DENIED)
-1. **Unauthenticated Read:** Unauthenticated client attempts `get` or `list` on `/places`.
+1. **Unauthenticated Write / Private Read:** Unauthenticated client attempts `create`/`update`/`delete` on `/places` or `get`/`list` on `/users/userA/preferences/wishlist`.
 2. **Unverified Email Write:** Signed-in user with `email_verified: false` creates a place, review, or preference.
 3. **Owner Spoofing on Create:** User A creates `/places/p1` with `ownerId: "userB"`.
 4. **Cross-User Review Edit:** User B attempts to `update` `/places/p1/reviews/r1` owned by User A.
