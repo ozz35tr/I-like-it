@@ -64,6 +64,7 @@ import {
   countLegacyPersonalCloudPlaces,
   importBackupToFirestore,
   migrateLegacyPersonalCloudToShared,
+  migrateLegacySharedWishlistToPrivate,
   resolveSafeAuthorName,
 } from './lib/placesService';
 import {
@@ -211,6 +212,11 @@ export default function App() {
     optimisticHiddenOverridesRef.current.clear();
     setShowHiddenWishlist(false);
 
+    if (!actor) {
+      setStatusFilter('all');
+      setHiddenWishlistIds([]);
+    }
+
     const unsubHidden = subscribeHiddenWishlistIds(
       actor,
       (serverIds) => {
@@ -229,6 +235,8 @@ export default function App() {
     );
 
     if (actor) {
+      void migrateLegacySharedWishlistToPrivate(actor.uid);
+
       void listLocalIndexedDbPlaces()
         .then((localItems) => {
           setLocalLegacyCount(localItems.length);
@@ -1019,66 +1027,77 @@ export default function App() {
           </div>
         )}
 
-        {/* Gidilenler / Gidilecekler Sekmeleri & Gizle/Göster Kontrolü */}
+        {/* Gidilenler / Gidilecekler Sekmeleri & Gizle/Göster Kontrolü (Gidilecekler yalnızca giriş yapanlara özel) */}
         <div className="space-y-3">
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <div className="flex flex-wrap items-center gap-2">
-              <div
-                role="tablist"
-                aria-label="Mekan listesi görünümü"
-                className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full overflow-x-auto"
-              >
-                {(
-                  [
-                    ['all', 'Tümü', visitedCount + wishlistCount],
-                    ['visited', 'Gidilenler', visitedCount],
-                    ['wishlist', 'Gidilecekler', wishlistCount],
-                  ] as const
-                ).map(([key, label, count]) => {
-                  const active = statusFilter === key;
-                  return (
-                    <button
-                      key={key}
-                      type="button"
-                      role="tab"
-                      aria-selected={active}
-                      onClick={() => setStatusFilter(key)}
-                      className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
-                        active
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
-                      }`}
-                    >
-                      {label} ({count})
-                    </button>
-                  );
-                })}
-              </div>
-
-              {hiddenWishlistCount > 0 && (
-                <button
-                  type="button"
-                  onClick={() => setShowHiddenWishlist((prev) => !prev)}
-                  className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
-                    showHiddenWishlist
-                      ? 'bg-slate-900 text-white border-slate-900'
-                      : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
-                  }`}
+            {actor ? (
+              <div className="flex flex-wrap items-center gap-2">
+                <div
+                  role="tablist"
+                  aria-label="Mekan listesi görünümü"
+                  className="inline-flex items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full overflow-x-auto"
                 >
-                  {showHiddenWishlist ? (
-                    <>
-                      <EyeOff className="w-3.5 h-3.5" />
-                      <span>Gizlenenleri Gizle ({hiddenWishlistCount})</span>
-                    </>
-                  ) : (
-                    <>
-                      <Eye className="w-3.5 h-3.5 text-amber-700" />
-                      <span>Gizlenenleri Göster ({hiddenWishlistCount})</span>
-                    </>
-                  )}
-                </button>
-              )}
-            </div>
+                  {(
+                    [
+                      ['all', 'Tümü', visitedCount + wishlistCount],
+                      ['visited', 'Gidilenler', visitedCount],
+                      ['wishlist', 'Gidilecekler', wishlistCount],
+                    ] as const
+                  ).map(([key, label, count]) => {
+                    const active = statusFilter === key;
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        role="tab"
+                        aria-selected={active}
+                        onClick={() => setStatusFilter(key)}
+                        className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                          active
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        {label} ({count})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {hiddenWishlistCount > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setShowHiddenWishlist((prev) => !prev)}
+                    className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border whitespace-nowrap shrink-0 transition-colors ${
+                      showHiddenWishlist
+                        ? 'bg-slate-900 text-white border-slate-900'
+                        : 'bg-amber-50 text-amber-900 border-amber-200 hover:bg-amber-100'
+                    }`}
+                  >
+                    {showHiddenWishlist ? (
+                      <>
+                        <EyeOff className="w-3.5 h-3.5" />
+                        <span>Gizlenenleri Gizle ({hiddenWishlistCount})</span>
+                      </>
+                    ) : (
+                      <>
+                        <Eye className="w-3.5 h-3.5 text-amber-700" />
+                        <span>Gizlenenleri Göster ({hiddenWishlistCount})</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
+            ) : (
+              <div className="inline-flex flex-wrap items-center gap-2">
+                <span className="inline-flex items-center px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-900 tabular-nums">
+                  Gidilenler ({visitedCount})
+                </span>
+                <span className="text-xs text-slate-500">
+                  Kişisel gidilecekler listeniz için giriş yapabilirsiniz
+                </span>
+              </div>
+            )}
 
             <p className="text-xs text-slate-500 tabular-nums shrink-0">
               Gösterilen{' '}
@@ -1674,7 +1693,7 @@ export default function App() {
                               {canDeletePlace && (
                                 <button
                                   type="button"
-                                  onClick={() => void removePlace(actor, place.id)}
+                                  onClick={() => void removePlace(actor, place.id, isWishlist)}
                                   aria-label={`${place.name} kaydını sil`}
                                   className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
                                 >
@@ -1871,7 +1890,7 @@ export default function App() {
                           {canDeletePlace && (
                             <button
                               type="button"
-                              onClick={() => void removePlace(actor, place.id)}
+                              onClick={() => void removePlace(actor, place.id, isWishlist)}
                               aria-label={`${place.name} kaydını sil`}
                               className="min-h-[36px] min-w-[36px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
                             >
@@ -1892,16 +1911,16 @@ export default function App() {
       {showAddModal && (
         <AddPlaceModal
           actor={actor}
-          defaultVisitStatus={statusFilter === 'wishlist' ? 'wishlist' : 'visited'}
+          defaultVisitStatus={actor && statusFilter === 'wishlist' ? 'wishlist' : 'visited'}
           knownRegions={knownRegions}
           onRequestSignIn={() => void handleSignIn()}
           onClose={() => setShowAddModal(false)}
           onCreated={(createdId, createdStatus, hideInWishlist) => {
             setShowAddModal(false);
-            if (createdStatus === 'wishlist' && hideInWishlist) {
+            if (actor && createdStatus === 'wishlist' && hideInWishlist) {
               void handleToggleHiddenWishlist(createdId, true);
             }
-            if (statusFilter !== 'all' && statusFilter !== createdStatus) {
+            if (actor && statusFilter !== 'all' && statusFilter !== createdStatus) {
               setStatusFilter(createdStatus);
             }
           }}
@@ -1913,7 +1932,7 @@ export default function App() {
           actor={actor}
           place={liveDetailPlace}
           isHiddenInWishlist={hiddenWishlistSet.has(liveDetailPlace.id)}
-          onToggleHiddenWishlist={handleToggleHiddenWishlist}
+          onToggleHiddenWishlist={actor ? handleToggleHiddenWishlist : undefined}
           onRequestSignIn={() => void handleSignIn()}
           onClose={() => setDetailPlace(null)}
           onDeleted={() => setDetailPlace(null)}

@@ -45,7 +45,7 @@ service cloud.firestore {
         (listVal.size() < 6 || isValidCuisineTag(listVal[5]));
     }
 
-    function isValidSharedPlace(data) {
+    function isValidPlaceFields(data) {
       return data.keys().hasAll([
           'ownerId',
           'authorName',
@@ -90,12 +90,10 @@ service cloud.firestore {
         data.authorName is string &&
         data.authorName.size() >= 1 &&
         data.authorName.size() <= 60 &&
-        data.visibility == 'shared' &&
         data.name is string &&
         data.name.size() >= 2 &&
         data.name.size() <= 100 &&
         data.category in ['restaurant', 'esnaf', 'cafe', 'bakery', 'bistro', 'bufe', 'bar', 'pastane'] &&
-        (!('visitStatus' in data) || data.visitStatus in ['visited', 'wishlist']) &&
         (!('cuisineType' in data) || (data.cuisineType is string && data.cuisineType.size() <= 160)) &&
         (!('cuisineTypes' in data) || isValidCuisineTypesList(data.cuisineTypes)) &&
         (!('locationArea' in data) || (data.locationArea is string && data.locationArea.size() <= 80)) &&
@@ -121,6 +119,19 @@ service cloud.firestore {
         (!('priceRatingSum' in data) || (data.priceRatingSum is number && data.priceRatingSum >= 0 && data.priceRatingSum <= 50000)) &&
         data.createdAt is timestamp &&
         data.updatedAt is timestamp;
+    }
+
+    function isValidSharedPlace(data) {
+      return isValidPlaceFields(data) &&
+        data.visibility == 'shared' &&
+        (!('visitStatus' in data) || data.visitStatus == 'visited');
+    }
+
+    function isValidUserWishlistPlace(data, userId) {
+      return isValidPlaceFields(data) &&
+        data.ownerId == userId &&
+        data.visibility == 'private' &&
+        data.visitStatus == 'wishlist';
     }
 
     function isValidSharedReview(data, placeId) {
@@ -184,10 +195,10 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Shared Collaborative Places & Reviews (Readable publicly without sign-in; writes require verified auth)
+    // Shared Collaborative Visited Places & Reviews (Readable publicly without sign-in; writes require verified auth)
     match /places/{placeId} {
       allow get: if isValidId(placeId) &&
-        existing().visibility == 'shared';
+        (resource == null || existing().visibility == 'shared');
 
       allow list: if resource.data.visibility == 'shared';
 
@@ -245,7 +256,7 @@ service cloud.firestore {
               'visitStatus',
               'updatedAt'
             ]) &&
-            (!('visitStatus' in incoming()) || incoming().visitStatus == 'visited' || incoming().reviewCount == 0)
+            (!('visitStatus' in incoming()) || incoming().visitStatus == 'visited')
           )
         );
 
@@ -292,6 +303,52 @@ service cloud.firestore {
           isVerifiedSignedIn() &&
           existing().ownerId == request.auth.uid;
       }
+    }
+
+    // Per-User Private Wishlist (Gidilecekler - strictly isolated to the signed-in owner)
+    match /users/{userId}/wishlist/{placeId} {
+      allow get: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        (resource == null || existing().ownerId == request.auth.uid);
+
+      allow list: if isValidId(userId) &&
+        isVerifiedOwner(userId) &&
+        resource.data.ownerId == request.auth.uid;
+
+      allow create: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        isValidUserWishlistPlace(incoming(), userId) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        isValidUserWishlistPlace(incoming(), userId) &&
+        incoming().ownerId == existing().ownerId &&
+        incoming().authorName == existing().authorName &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name',
+          'category',
+          'mapsUrl',
+          'cuisineType',
+          'cuisineTypes',
+          'locationArea',
+          'lat',
+          'lng',
+          'latestComment',
+          'coverImage',
+          'updatedAt'
+        ]);
+
+      allow delete: if isValidId(userId) &&
+        isValidId(placeId) &&
+        isVerifiedOwner(userId) &&
+        existing().ownerId == request.auth.uid;
     }
 
     // Per-User Private Preferences (Wishlist hide/show sync)

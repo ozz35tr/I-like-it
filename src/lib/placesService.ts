@@ -185,6 +185,7 @@ export function subscribePlaces(
     (snapshot) => {
       const items = snapshot.docs
         .map((d) => mapPlaceDoc(d.id, d.data()))
+        .filter((p) => !(p.visitStatus === 'wishlist' && p.reviewCount === 0))
         .sort((a, b) => b.updatedAt - a.updatedAt);
       onData(items);
     },
@@ -196,6 +197,117 @@ export function subscribePlaces(
       }
     }
   );
+}
+
+export function subscribeUserWishlistPlaces(
+  userId: string,
+  onData: (places: PlaceItem[]) => void,
+  onError: (error: Error) => void
+): () => void {
+  const path = `users/${userId}/wishlist`;
+  const q = query(collection(db, path), where('ownerId', '==', userId));
+
+  return onSnapshot(
+    q,
+    (snapshot) => {
+      const items = snapshot.docs
+        .map((d) => ({
+          ...mapPlaceDoc(d.id, d.data()),
+          visitStatus: 'wishlist' as const,
+        }))
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      onData(items);
+    },
+    (error) => {
+      try {
+        handleFirestoreError(error, OperationType.LIST, path);
+      } catch (wrapped) {
+        onError(wrapped instanceof Error ? wrapped : new Error(String(wrapped)));
+      }
+    }
+  );
+}
+
+export async function migrateLegacySharedWishlistToPrivate(userId: string): Promise<number> {
+  const path = 'places';
+  try {
+    const snap = await getDocs(
+      query(collection(db, path), where('visibility', '==', 'shared'))
+    );
+    const legacyOwnWishlistDocs = snap.docs.filter((d) => {
+      const data = d.data();
+      return (
+        data.ownerId === userId &&
+        data.visitStatus === 'wishlist' &&
+        (typeof data.reviewCount !== 'number' || data.reviewCount === 0)
+      );
+    });
+
+    if (legacyOwnWishlistDocs.length === 0) return 0;
+
+    let migrated = 0;
+    for (let i = 0; i < legacyOwnWishlistDocs.length; i += 200) {
+      const chunk = legacyOwnWishlistDocs.slice(i, i + 200);
+      const batch = writeBatch(db);
+
+      for (const legacyDoc of chunk) {
+        const data = legacyDoc.data();
+        const { cuisineTypes, cuisineType } = normalizeCuisineTags(
+          data.cuisineTypes,
+          data.cuisineType
+        );
+        const cleanName =
+          typeof data.name === 'string' && data.name.trim().length >= STORAGE_LIMITS.NAME_MIN
+            ? data.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX)
+            : 'Mekan';
+
+        batch.set(doc(db, `users/${userId}/wishlist/${legacyDoc.id}`), {
+          ownerId: userId,
+          authorName: resolveSafeAuthorName(
+            typeof data.authorName === 'string' ? data.authorName : undefined
+          ),
+          visibility: 'private',
+          name: cleanName,
+          category: normalizeCategory(data.category),
+          visitStatus: 'wishlist',
+          cuisineType,
+          cuisineTypes,
+          locationArea:
+            typeof data.locationArea === 'string'
+              ? data.locationArea.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX)
+              : '',
+          lat: normalizeCoord(data.lat, -90, 90),
+          lng: normalizeCoord(data.lng, -180, 180),
+          mapsUrl:
+            typeof data.mapsUrl === 'string'
+              ? data.mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX)
+              : '',
+          coverImage:
+            typeof data.coverImage === 'string' ? data.coverImage.slice(0, 160000) : '',
+          latestComment:
+            typeof data.latestComment === 'string'
+              ? data.latestComment.slice(0, STORAGE_LIMITS.COMMENT_MAX)
+              : '',
+          avgRating: 0,
+          reviewCount: 0,
+          ratingSum: 0,
+          avgPriceRating: 0,
+          priceRatingCount: 0,
+          priceRatingSum: 0,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+        batch.delete(legacyDoc.ref);
+        migrated += 1;
+      }
+
+      await batch.commit();
+    }
+
+    return migrated;
+  } catch {
+    return 0;
+  }
 }
 
 export function subscribePlaceReviews(
@@ -263,11 +375,12 @@ export async function createPlaceWithInitialReview(
   const coverImage = cleanPhotos[0] || '';
 
   if (visitStatus === 'wishlist') {
+    const wishlistPath = `users/${userId}/wishlist/${placeId}`;
     try {
-      await setDoc(doc(db, placePath), {
+      await setDoc(doc(db, wishlistPath), {
         ownerId: userId,
         authorName: cleanAuthor,
-        visibility: 'shared',
+        visibility: 'private',
         name: cleanName,
         category: normalizeCategory(input.category),
         visitStatus: 'wishlist',
@@ -290,7 +403,7 @@ export async function createPlaceWithInitialReview(
       });
       return placeId;
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, placePath);
+      handleFirestoreError(error, OperationType.CREATE, wishlistPath);
     }
   }
 
@@ -349,9 +462,12 @@ export async function createPlaceWithInitialReview(
 
 export async function updatePlaceMapsUrl(
   placeId: string,
-  mapsUrl: string
+  mapsUrl: string,
+  userId?: string,
+  isWishlist?: boolean
 ): Promise<void> {
-  const placePath = `places/${placeId}`;
+  const placePath =
+    isWishlist && userId ? `users/${userId}/wishlist/${placeId}` : `places/${placeId}`;
   try {
     await updateDoc(doc(db, placePath), {
       mapsUrl: mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX),
@@ -373,9 +489,12 @@ export interface UpdatePlaceTagsAndLocationInput {
 
 export async function updatePlaceTagsAndLocation(
   placeId: string,
-  input: UpdatePlaceTagsAndLocationInput
+  input: UpdatePlaceTagsAndLocationInput,
+  userId?: string,
+  isWishlist?: boolean
 ): Promise<void> {
-  const placePath = `places/${placeId}`;
+  const placePath =
+    isWishlist && userId ? `users/${userId}/wishlist/${placeId}` : `places/${placeId}`;
   const payload: Record<string, unknown> = {
     updatedAt: serverTimestamp(),
   };
@@ -421,6 +540,7 @@ export async function addReviewToPlace(
   const reviewId = generateId();
   const placePath = `places/${input.placeId}`;
   const reviewPath = `${placePath}/reviews/${reviewId}`;
+  const wishPath = `users/${userId}/wishlist/${input.placeId}`;
 
   const cleanAuthor = resolveSafeAuthorName(authorName);
   const cleanComment = input.comment.trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
@@ -433,24 +553,101 @@ export async function addReviewToPlace(
     await runTransaction(db, async (tx) => {
       const placeRef = doc(db, placePath);
       const snap = await tx.get(placeRef);
-      if (!snap.exists()) {
+
+      if (snap.exists()) {
+        const data = snap.data();
+        const nextCount = (typeof data.reviewCount === 'number' ? data.reviewCount : 0) + 1;
+        const nextSum = (typeof data.ratingSum === 'number' ? data.ratingSum : 0) + input.rating;
+        const nextAvg = Math.round((nextSum / nextCount) * 100) / 100;
+
+        const prevPriceCount = typeof data.priceRatingCount === 'number' ? data.priceRatingCount : 0;
+        const prevPriceSum = typeof data.priceRatingSum === 'number' ? data.priceRatingSum : 0;
+        const nextPriceCount = prevPriceCount + (cleanPriceRating ? 1 : 0);
+        const nextPriceSum = prevPriceSum + (cleanPriceRating ?? 0);
+        const nextAvgPrice =
+          nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
+
+        const existingCover = typeof data.coverImage === 'string' ? data.coverImage : '';
+        const nextCover = existingCover || cleanPhotos[0] || '';
+
+        tx.set(doc(db, reviewPath), {
+          ownerId: userId,
+          authorName: cleanAuthor,
+          visibility: 'shared',
+          placeId: input.placeId,
+          rating: input.rating,
+          ...(cleanPriceRating ? { priceRating: cleanPriceRating } : {}),
+          comment: cleanComment,
+          photos: cleanPhotos,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+
+        tx.update(placeRef, {
+          avgRating: nextAvg,
+          reviewCount: nextCount,
+          ratingSum: nextSum,
+          avgPriceRating: nextAvgPrice,
+          priceRatingCount: nextPriceCount,
+          priceRatingSum: nextPriceSum,
+          latestComment: cleanComment,
+          coverImage: nextCover,
+          visitStatus: 'visited',
+          updatedAt: serverTimestamp(),
+        });
+        return;
+      }
+
+      const wishRef = doc(db, wishPath);
+      const wishSnap = await tx.get(wishRef);
+      if (!wishSnap.exists()) {
         throw new Error('Mekan bulunamadı.');
       }
 
-      const data = snap.data();
-      const nextCount = (typeof data.reviewCount === 'number' ? data.reviewCount : 0) + 1;
-      const nextSum = (typeof data.ratingSum === 'number' ? data.ratingSum : 0) + input.rating;
-      const nextAvg = Math.round((nextSum / nextCount) * 100) / 100;
-
-      const prevPriceCount = typeof data.priceRatingCount === 'number' ? data.priceRatingCount : 0;
-      const prevPriceSum = typeof data.priceRatingSum === 'number' ? data.priceRatingSum : 0;
-      const nextPriceCount = prevPriceCount + (cleanPriceRating ? 1 : 0);
-      const nextPriceSum = prevPriceSum + (cleanPriceRating ?? 0);
-      const nextAvgPrice =
-        nextPriceCount > 0 ? Math.round((nextPriceSum / nextPriceCount) * 100) / 100 : 0;
-
-      const existingCover = typeof data.coverImage === 'string' ? data.coverImage : '';
+      const wishData = wishSnap.data();
+      const { cuisineTypes, cuisineType } = normalizeCuisineTags(
+        wishData.cuisineTypes,
+        wishData.cuisineType
+      );
+      const wishName =
+        typeof wishData.name === 'string' && wishData.name.trim().length >= STORAGE_LIMITS.NAME_MIN
+          ? wishData.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX)
+          : 'Mekan';
+      const existingCover = typeof wishData.coverImage === 'string' ? wishData.coverImage : '';
       const nextCover = existingCover || cleanPhotos[0] || '';
+
+      tx.set(placeRef, {
+        ownerId: userId,
+        authorName: resolveSafeAuthorName(
+          typeof wishData.authorName === 'string' ? wishData.authorName : cleanAuthor
+        ),
+        visibility: 'shared',
+        name: wishName,
+        category: normalizeCategory(wishData.category),
+        visitStatus: 'visited',
+        cuisineType,
+        cuisineTypes,
+        locationArea:
+          typeof wishData.locationArea === 'string'
+            ? wishData.locationArea.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX)
+            : '',
+        lat: normalizeCoord(wishData.lat, -90, 90),
+        lng: normalizeCoord(wishData.lng, -180, 180),
+        mapsUrl:
+          typeof wishData.mapsUrl === 'string'
+            ? wishData.mapsUrl.trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX)
+            : '',
+        coverImage: nextCover,
+        latestComment: cleanComment,
+        avgRating: input.rating,
+        reviewCount: 1,
+        ratingSum: input.rating,
+        avgPriceRating: cleanPriceRating ?? 0,
+        priceRatingCount: cleanPriceRating ? 1 : 0,
+        priceRatingSum: cleanPriceRating ?? 0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
 
       tx.set(doc(db, reviewPath), {
         ownerId: userId,
@@ -465,18 +662,7 @@ export async function addReviewToPlace(
         updatedAt: serverTimestamp(),
       });
 
-      tx.update(placeRef, {
-        avgRating: nextAvg,
-        reviewCount: nextCount,
-        ratingSum: nextSum,
-        avgPriceRating: nextAvgPrice,
-        priceRatingCount: nextPriceCount,
-        priceRatingSum: nextPriceSum,
-        latestComment: cleanComment,
-        coverImage: nextCover,
-        visitStatus: 'visited',
-        updatedAt: serverTimestamp(),
-      });
+      tx.delete(wishRef);
     });
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, placePath);
@@ -608,7 +794,23 @@ export async function deleteReviewFromPlace(
   }
 }
 
-export async function deletePlace(userId: string, placeId: string): Promise<void> {
+export async function deletePlace(
+  userId: string,
+  placeId: string,
+  isWishlist?: boolean
+): Promise<void> {
+  if (isWishlist) {
+    const wishPath = `users/${userId}/wishlist/${placeId}`;
+    try {
+      const batch = writeBatch(db);
+      batch.delete(doc(db, wishPath));
+      await batch.commit();
+      return;
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, wishPath);
+    }
+  }
+
   const placePath = `places/${placeId}`;
   const reviewsPath = `${placePath}/reviews`;
 
@@ -810,15 +1012,30 @@ export interface BackupPayload {
   reviews: ReviewItem[];
 }
 
-export async function exportFirestoreBackup(): Promise<BackupPayload> {
+export async function exportFirestoreBackup(userId?: string): Promise<BackupPayload> {
   const placesPath = 'places';
   try {
     const placesSnap = await getDocs(
       query(collection(db, placesPath), where('visibility', '==', 'shared'))
     );
-    const places = placesSnap.docs.map((d) => mapPlaceDoc(d.id, d.data()));
+    const sharedVisitedPlaces = placesSnap.docs
+      .map((d) => mapPlaceDoc(d.id, d.data()))
+      .filter((p) => !(p.visitStatus === 'wishlist' && p.reviewCount === 0));
+
+    let wishlistPlaces: PlaceItem[] = [];
+    if (userId) {
+      const wishSnap = await getDocs(
+        query(collection(db, `users/${userId}/wishlist`), where('ownerId', '==', userId))
+      );
+      wishlistPlaces = wishSnap.docs.map((d) => ({
+        ...mapPlaceDoc(d.id, d.data()),
+        visitStatus: 'wishlist' as const,
+      }));
+    }
+
+    const places = [...sharedVisitedPlaces, ...wishlistPlaces];
     const reviewSnaps = await Promise.all(
-      places.map((p) =>
+      sharedVisitedPlaces.map((p) =>
         getDocs(query(collection(db, `${placesPath}/${p.id}/reviews`), where('visibility', '==', 'shared')))
       )
     );

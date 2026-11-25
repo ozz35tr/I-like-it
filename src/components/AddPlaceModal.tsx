@@ -45,8 +45,12 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   onClose,
   onCreated,
 }) => {
-  const [visitStatus, setVisitStatus] = useState<VisitStatus>(defaultVisitStatus);
+  const [visitStatus, setVisitStatus] = useState<VisitStatus>(
+    actor ? defaultVisitStatus : 'visited'
+  );
   const [hideInWishlist, setHideInWishlist] = useState(false);
+
+  const effectiveVisitStatus: VisitStatus = actor ? visitStatus : 'visited';
 
   const [mapsInput, setMapsInput] = useState('');
   const [cleanMapsUrl, setCleanMapsUrl] = useState('');
@@ -222,7 +226,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       );
       return;
     }
-    if (visitStatus === 'visited' && trimmedComment.length < STORAGE_LIMITS.COMMENT_MIN) {
+    if (effectiveVisitStatus === 'visited' && trimmedComment.length < STORAGE_LIMITS.COMMENT_MIN) {
       setError('Lütfen mekan hakkında kısa bir yorum yazın.');
       return;
     }
@@ -234,19 +238,23 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       const placeId = await createPlace(actor, {
         name: trimmedName,
         category,
-        visitStatus,
+        visitStatus: effectiveVisitStatus,
         cuisineTypes: finalCuisines,
         cuisineType: finalCuisines.join(', '),
         locationArea: locationArea.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX),
         lat: coords.lat,
         lng: coords.lng,
         mapsUrl: finalUrl,
-        initialRating: visitStatus === 'visited' ? rating : undefined,
-        initialPriceRating: visitStatus === 'visited' ? priceRating : undefined,
+        initialRating: effectiveVisitStatus === 'visited' ? rating : undefined,
+        initialPriceRating: effectiveVisitStatus === 'visited' ? priceRating : undefined,
         initialComment: trimmedComment,
         photos,
       });
-      onCreated(placeId, visitStatus, visitStatus === 'wishlist' ? hideInWishlist : false);
+      onCreated(
+        placeId,
+        effectiveVisitStatus,
+        effectiveVisitStatus === 'wishlist' ? hideInWishlist : false
+      );
     } catch (err) {
       setError(formatFriendlyFirestoreError(err, 'Mekan kaydedilemedi.'));
     } finally {
@@ -284,7 +292,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
           {!actor && (
             <div className="rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950">
               <span>
-                Giriş yapmadığınız için bu kayıt yalnızca bu cihazda tutulur. Ortak listeye eklemek için giriş yapabilirsiniz.
+                Giriş yapmadığınız için bu kayıt yalnızca bu cihazda tutulur. Kişisel gidilecekler listeniz ve ortak liste için giriş yapabilirsiniz.
               </span>
               {onRequestSignIn && (
                 <button
@@ -298,39 +306,41 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
           )}
 
-          {/* Liste Durumu: Gidilenler vs Gidilecekler */}
-          <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
-            <button
-              type="button"
-              onClick={() => {
-                setVisitStatus('visited');
-                setError(null);
-              }}
-              className={`min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                visitStatus === 'visited'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
-              <span>Gittiğim Yer</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => {
-                setVisitStatus('wishlist');
-                setError(null);
-              }}
-              className={`min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
-                visitStatus === 'wishlist'
-                  ? 'bg-white text-slate-900 shadow-sm'
-                  : 'text-slate-600 hover:text-slate-900'
-              }`}
-            >
-              <BookmarkPlus className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-              <span>Gidilecek Yer</span>
-            </button>
-          </div>
+          {/* Liste Durumu: Gidilenler vs Gidilecekler (Gidilecekler yalnızca giriş yapan kullanıcılara özeldir) */}
+          {actor && (
+            <div className="grid grid-cols-2 gap-1.5 p-1 bg-slate-100 rounded-xl">
+              <button
+                type="button"
+                onClick={() => {
+                  setVisitStatus('visited');
+                  setError(null);
+                }}
+                className={`min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                  effectiveVisitStatus === 'visited'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <CheckCircle2 className="w-3.5 h-3.5 text-emerald-700 shrink-0" />
+                <span>Gittiğim Yer</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setVisitStatus('wishlist');
+                  setError(null);
+                }}
+                className={`min-h-[42px] inline-flex items-center justify-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap ${
+                  effectiveVisitStatus === 'wishlist'
+                    ? 'bg-white text-slate-900 shadow-sm'
+                    : 'text-slate-600 hover:text-slate-900'
+                }`}
+              >
+                <BookmarkPlus className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                <span>Gidilecek Yer</span>
+              </button>
+            </div>
+          )}
 
           {/* Google Maps Share Link */}
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2.5">
@@ -338,7 +348,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
               <label htmlFor="maps-share-link" className="text-xs font-semibold text-slate-700">
                 Google Haritalar Linki{' '}
                 <span className="font-normal text-slate-500">
-                  ({visitStatus === 'wishlist' ? 'Seç & Yapıştır' : 'İsteğe Bağlı'})
+                  ({effectiveVisitStatus === 'wishlist' ? 'Seç & Yapıştır' : 'İsteğe Bağlı'})
                 </span>
               </label>
               <a
@@ -577,7 +587,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
           </div>
 
-          {visitStatus === 'wishlist' && (
+          {actor && effectiveVisitStatus === 'wishlist' && (
             <label className="flex items-center gap-2.5 rounded-xl border border-slate-200 bg-slate-50 px-3.5 py-2.5 cursor-pointer">
               <input
                 type="checkbox"
@@ -593,7 +603,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
           )}
 
           {/* Lokanta Puanı & Fiyat Puanı Sekmeleri */}
-          {visitStatus === 'visited' && (
+          {effectiveVisitStatus === 'visited' && (
             <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-2.5">
               <div
                 role="tablist"
@@ -651,7 +661,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
           <div>
             <div className="flex items-center justify-between mb-1.5">
               <label htmlFor="place-comment" className="text-xs font-semibold text-slate-700">
-                {visitStatus === 'visited' ? 'Yorum *' : 'Not (İsteğe Bağlı)'}
+                {effectiveVisitStatus === 'visited' ? 'Yorum *' : 'Not (İsteğe Bağlı)'}
               </label>
               <span className="font-mono text-[11px] text-slate-400 tabular-nums">
                 {comment.length}/{STORAGE_LIMITS.COMMENT_MAX}
@@ -659,13 +669,13 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
             <textarea
               id="place-comment"
-              required={visitStatus === 'visited'}
-              rows={visitStatus === 'visited' ? 3 : 2}
+              required={effectiveVisitStatus === 'visited'}
+              rows={effectiveVisitStatus === 'visited' ? 3 : 2}
               maxLength={STORAGE_LIMITS.COMMENT_MAX}
               value={comment}
               onChange={(e) => setComment(e.target.value)}
               placeholder={
-                visitStatus === 'visited'
+                effectiveVisitStatus === 'visited'
                   ? 'Yemekler, kahve veya ortam nasıldı?'
                   : 'Neden gitmek istiyorsunuz? (Örn: Kokoreçi meşhurmuş, hafta sonu bakalım)'
               }
@@ -673,7 +683,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             />
           </div>
 
-          {visitStatus === 'visited' && <PhotoUploader photos={photos} onChange={setPhotos} />}
+          {effectiveVisitStatus === 'visited' && <PhotoUploader photos={photos} onChange={setPhotos} />}
 
           {error && (
             <div
@@ -701,7 +711,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
               <span>
                 {submitting
                   ? 'Kaydediliyor...'
-                  : visitStatus === 'wishlist'
+                  : effectiveVisitStatus === 'wishlist'
                     ? 'Gidilecekler Listesine Ekle'
                     : 'Listeye Ekle'}
               </span>

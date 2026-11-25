@@ -20,8 +20,8 @@
         },
         "visibility": {
           "type": "string",
-          "description": "Shared visibility marker.",
-          "enum": ["shared"]
+          "description": "Visibility scope ('shared' for public visited places, 'private' for per-user wishlist).",
+          "enum": ["shared", "private"]
         },
         "name": {
           "type": "string",
@@ -36,7 +36,7 @@
         },
         "visitStatus": {
           "type": "string",
-          "description": "Whether the place has been visited or is on the wishlist to visit.",
+          "description": "Whether the place has been visited (shared) or is on the user's private wishlist.",
           "enum": ["visited", "wishlist"]
         },
         "cuisineType": {
@@ -231,11 +231,15 @@
   "firestore": {
     "/places/{placeId}": {
       "schema": { "$ref": "#/entities/Place" },
-      "description": "Shared community list of visited and wishlist places readable by all visitors (including unauthenticated first-time users) and writable by verified signed-in users."
+      "description": "Shared community list of visited places readable by all visitors (including unauthenticated first-time users) and writable by verified signed-in users."
     },
     "/places/{placeId}/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/Review" },
       "description": "Reviews, ratings, author names, and optional compressed photos on a shared place."
+    },
+    "/users/{userId}/wishlist/{placeId}": {
+      "schema": { "$ref": "#/entities/Place" },
+      "description": "Private per-user wishlist (Gidilecekler) accessible solely by the authenticated owner."
     },
     "/users/{userId}/preferences/{prefId}": {
       "schema": { "$ref": "#/entities/UserPreference" },

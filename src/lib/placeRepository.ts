@@ -7,13 +7,11 @@ import {
   exportDatabaseBackup,
   importBackupToLocal,
   readLocalHiddenWishlistIds,
-  subscribeLocalHiddenWishlistIds,
   subscribeLocalPlaceReviews,
   subscribeLocalPlaces,
   updateLocalPlaceMapsUrl,
   updateLocalPlaceTagsAndLocation,
   updateLocalReviewInPlace,
-  writeLocalHiddenWishlistIds,
 } from './localDb';
 import {
   addReviewToPlace,
@@ -25,6 +23,7 @@ import {
   subscribeFirestoreHiddenWishlistIds,
   subscribePlaceReviews,
   subscribePlaces,
+  subscribeUserWishlistPlaces,
   toggleFirestoreWishlistPlaceHidden,
   updatePlaceMapsUrl,
   updatePlaceTagsAndLocation,
@@ -66,13 +65,64 @@ function mergeReviews(cloudReviews: ReviewItem[], localReviews: ReviewItem[]): R
   return Array.from(map.values()).sort((a, b) => b.createdAt - a.createdAt);
 }
 
+function isPublicVisitedPlace(place: { visitStatus?: string; reviewCount?: number }): boolean {
+  return !(place.visitStatus === 'wishlist' && (place.reviewCount ?? 0) === 0);
+}
+
 export function subscribeUserOrLocalPlaces(
   actor: CloudActor | null | undefined,
   onData: (places: PlaceItem[]) => void,
   onError: (error: Error) => void
 ): () => void {
   if (actor) {
-    return subscribePlaces(onData, onError);
+    let sharedPlaces: PlaceItem[] = [];
+    let wishlistPlaces: PlaceItem[] = [];
+    let sharedReady = false;
+    let wishlistReady = false;
+
+    const emit = () => {
+      if (sharedReady || wishlistReady) {
+        onData(mergePlaces(sharedPlaces, wishlistPlaces));
+      }
+    };
+
+    const unsubShared = subscribePlaces(
+      (items) => {
+        sharedPlaces = items.filter(isPublicVisitedPlace);
+        sharedReady = true;
+        emit();
+      },
+      (err) => {
+        sharedReady = true;
+        if (wishlistReady) {
+          emit();
+        } else {
+          onError(err);
+        }
+      }
+    );
+
+    const unsubWishlist = subscribeUserWishlistPlaces(
+      actor.uid,
+      (items) => {
+        wishlistPlaces = items;
+        wishlistReady = true;
+        emit();
+      },
+      (err) => {
+        wishlistReady = true;
+        if (sharedReady) {
+          emit();
+        } else {
+          onError(err);
+        }
+      }
+    );
+
+    return () => {
+      unsubShared();
+      unsubWishlist();
+    };
   }
 
   let cloudPlaces: PlaceItem[] = [];
@@ -82,19 +132,24 @@ export function subscribeUserOrLocalPlaces(
 
   const emit = () => {
     if (cloudReady || localReady) {
-      onData(mergePlaces(cloudPlaces, localPlaces));
+      onData(
+        mergePlaces(
+          cloudPlaces.filter(isPublicVisitedPlace),
+          localPlaces.filter(isPublicVisitedPlace)
+        )
+      );
     }
   };
 
   const unsubCloud = subscribePlaces(
     (items) => {
-      cloudPlaces = items;
+      cloudPlaces = items.filter(isPublicVisitedPlace);
       cloudReady = true;
       emit();
     },
     (err) => {
       cloudReady = true;
-      if (localReady && localPlaces.length > 0) {
+      if (localReady && localPlaces.some(isPublicVisitedPlace)) {
         emit();
       } else {
         onError(err);
@@ -104,7 +159,7 @@ export function subscribeUserOrLocalPlaces(
 
   const unsubLocal = subscribeLocalPlaces(
     (items) => {
-      localPlaces = items;
+      localPlaces = items.filter(isPublicVisitedPlace);
       localReady = true;
       emit();
     },
@@ -185,7 +240,8 @@ export function subscribeHiddenWishlistIds(
   if (actor) {
     return subscribeFirestoreHiddenWishlistIds(actor.uid, onData, onError);
   }
-  return subscribeLocalHiddenWishlistIds(onData);
+  onData([]);
+  return () => {};
 }
 
 export async function toggleWishlistPlaceHidden(
@@ -196,12 +252,7 @@ export async function toggleWishlistPlaceHidden(
   if (actor) {
     return toggleFirestoreWishlistPlaceHidden(actor.uid, placeId, hide);
   }
-  const current = readLocalHiddenWishlistIds();
-  const nextIds = hide
-    ? Array.from(new Set([...current, placeId])).slice(0, 500)
-    : current.filter((id) => id !== placeId);
-  writeLocalHiddenWishlistIds(nextIds);
-  return nextIds;
+  return [];
 }
 
 export function readCurrentLocalHiddenIds(): string[] {
@@ -215,16 +266,20 @@ export async function createPlace(
   if (actor) {
     return createPlaceWithInitialReview(actor.uid, actor.authorName, input);
   }
-  return createLocalPlaceWithInitialReview(input);
+  return createLocalPlaceWithInitialReview({
+    ...input,
+    visitStatus: 'visited',
+  });
 }
 
 export async function updateMapsUrl(
   actor: CloudActor | null | undefined,
   placeId: string,
-  mapsUrl: string
+  mapsUrl: string,
+  isWishlist?: boolean
 ): Promise<void> {
   if (actor) {
-    return updatePlaceMapsUrl(placeId, mapsUrl);
+    return updatePlaceMapsUrl(placeId, mapsUrl, actor.uid, isWishlist);
   }
   return updateLocalPlaceMapsUrl(placeId, mapsUrl);
 }
@@ -232,10 +287,11 @@ export async function updateMapsUrl(
 export async function updatePlaceMetadata(
   actor: CloudActor | null | undefined,
   placeId: string,
-  input: UpdatePlaceTagsAndLocationInput
+  input: UpdatePlaceTagsAndLocationInput,
+  isWishlist?: boolean
 ): Promise<void> {
   if (actor) {
-    return updatePlaceTagsAndLocation(placeId, input);
+    return updatePlaceTagsAndLocation(placeId, input, actor.uid, isWishlist);
   }
   return updateLocalPlaceTagsAndLocation(placeId, input);
 }
@@ -273,17 +329,18 @@ export async function deleteReview(
 
 export async function removePlace(
   actor: CloudActor | null | undefined,
-  placeId: string
+  placeId: string,
+  isWishlist?: boolean
 ): Promise<void> {
   if (actor) {
-    return deletePlace(actor.uid, placeId);
+    return deletePlace(actor.uid, placeId, isWishlist);
   }
   return deleteLocalPlace(placeId);
 }
 
 export async function exportBackup(actor: CloudActor | null | undefined) {
   if (actor) {
-    return exportFirestoreBackup();
+    return exportFirestoreBackup(actor.uid);
   }
   const [cloud, local] = await Promise.all([
     exportFirestoreBackup().catch(() => ({
@@ -296,8 +353,8 @@ export async function exportBackup(actor: CloudActor | null | undefined) {
   ]);
 
   const placeMap = new Map<string, unknown>();
-  for (const p of local.places) placeMap.set(p.id, p);
-  for (const p of cloud.places) placeMap.set(p.id, p);
+  for (const p of local.places.filter(isPublicVisitedPlace)) placeMap.set(p.id, p);
+  for (const p of cloud.places.filter(isPublicVisitedPlace)) placeMap.set(p.id, p);
 
   const reviewMap = new Map<string, unknown>();
   for (const r of local.reviews) reviewMap.set(r.id, r);

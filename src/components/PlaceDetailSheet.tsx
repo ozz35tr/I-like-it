@@ -108,6 +108,11 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [categoryDraft, setCategoryDraft] = useState<PlaceCategory>(place.category);
   const [savingMeta, setSavingMeta] = useState(false);
 
+  const isLocalPlace = isLocalDeviceRecord(place.ownerId);
+  const canWritePlaceOrReview = Boolean(actor) || isLocalPlace;
+  const canManagePlace = actor ? place.ownerId === actor.uid : isLocalPlace;
+  const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
+
   useEffect(() => {
     setLinkDraft(place.mapsUrl || '');
   }, [place.mapsUrl]);
@@ -214,7 +219,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
     e.preventDefault();
     const trimmed = linkDraft.trim();
     if (!trimmed) {
-      await updateMapsUrl(actor, place.id, '');
+      await updateMapsUrl(actor, place.id, '', isWishlist);
       setEditingLink(false);
       setLinkError(null);
       return;
@@ -225,18 +230,23 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       return;
     }
     try {
-      await updateMapsUrl(actor, place.id, url);
+      await updateMapsUrl(actor, place.id, url, isWishlist);
       const resolved = await resolveGoogleMapsLink(url);
       if (resolved) {
         const nextArea = place.locationArea || resolved.locationArea || undefined;
         const nextLat = place.lat ?? resolved.lat ?? null;
         const nextLng = place.lng ?? resolved.lng ?? null;
         if (nextArea || (nextLat !== null && nextLng !== null)) {
-          await updatePlaceMetadata(actor, place.id, {
-            locationArea: nextArea,
-            lat: nextLat,
-            lng: nextLng,
-          });
+          await updatePlaceMetadata(
+            actor,
+            place.id,
+            {
+              locationArea: nextArea,
+              lat: nextLat,
+              lng: nextLng,
+            },
+            isWishlist
+          );
         }
       }
       setEditingLink(false);
@@ -299,12 +309,17 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
         }
       }
 
-      await updatePlaceMetadata(actor, place.id, {
-        cuisineTypes: nextCuisines,
-        cuisineType: nextCuisines.join(', '),
-        locationArea: locationDraft.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX),
-        category: categoryDraft,
-      });
+      await updatePlaceMetadata(
+        actor,
+        place.id,
+        {
+          cuisineTypes: nextCuisines,
+          cuisineType: nextCuisines.join(', '),
+          locationArea: locationDraft.trim().slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX),
+          category: categoryDraft,
+        },
+        isWishlist
+      );
       setSelectedCuisines(nextCuisines);
       setCustomCuisineInput('');
       setEditingMeta(false);
@@ -316,14 +331,9 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   };
 
   const handleDeletePlace = async () => {
-    await removePlace(actor, place.id);
+    await removePlace(actor, place.id, isWishlist);
     onDeleted();
   };
-
-  const isLocalPlace = isLocalDeviceRecord(place.ownerId);
-  const canWritePlaceOrReview = Boolean(actor) || isLocalPlace;
-  const canManagePlace = actor ? place.ownerId === actor.uid : isLocalPlace;
-  const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
 
   const hasSavedMapsUrl = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
   const fallbackSearchUrl = getPlaceExternalMapsUrl(place);
