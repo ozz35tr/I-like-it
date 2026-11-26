@@ -8,10 +8,10 @@ import {
   ExternalLink,
   Eye,
   EyeOff,
+  Globe,
   Link2,
   Loader2,
   MapPin,
-  Megaphone,
   MessageSquarePlus,
   Pencil,
   Plus,
@@ -51,6 +51,7 @@ import {
 } from '../types/place';
 import { PhotoUploader } from './PhotoUploader';
 import { PRICE_RATING_LABELS, PriceRatingDisplay, PriceRatingInput } from './PriceRating';
+import { PromoPlatformIcon } from './PromoPlatformIcon';
 import { StarRatingDisplay, StarRatingInput } from './StarRating';
 
 interface PlaceDetailSheetProps {
@@ -284,7 +285,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
         setEditingPromo(false);
         setPromoError(null);
       } catch (err) {
-        setPromoError(formatFriendlyFirestoreError(err, 'Tanıtım linki güncellenemedi.'));
+        setPromoError(formatFriendlyFirestoreError(err, 'Sosyal medya linki güncellenemedi.'));
       } finally {
         setSavingPromo(false);
       }
@@ -293,7 +294,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
 
     const { url } = extractPromoLinkInput(trimmed);
     if (!url) {
-      setPromoError('Geçerli bir tanıtım bağlantısı girin (Instagram, YouTube, Facebook veya web).');
+      setPromoError('Geçerli bir sosyal medya bağlantısı girin (Instagram, YouTube, Facebook veya web).');
       return;
     }
 
@@ -304,7 +305,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       setPromoDraft(url);
       setEditingPromo(false);
     } catch (err) {
-      setPromoError(formatFriendlyFirestoreError(err, 'Tanıtım linki güncellenemedi.'));
+      setPromoError(formatFriendlyFirestoreError(err, 'Sosyal medya linki güncellenemedi.'));
     } finally {
       setSavingPromo(false);
     }
@@ -642,35 +643,40 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                 </div>
               )}
 
-              {/* Tanıtım Linki */}
+              {/* Sosyal Medya */}
               {hasSavedPromoUrl && !editingPromo ? (
-                <div className="rounded-xl bg-rose-50/60 border border-rose-200/80 px-3 py-2 flex items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <Megaphone className="w-4 h-4 text-rose-600 shrink-0" />
-                    <div className="min-w-0">
-                      <p className="text-[11px] font-semibold text-rose-900">
-                        {promoPlatform ? `Tanıtım Linki · ${promoPlatform}` : 'Tanıtım Linki'}
-                      </p>
-                      <p className="font-mono text-[11px] text-slate-600 truncate">
-                        {place.promoUrl}
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-1 shrink-0">
+                <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2.5 min-w-0">
                     <a
                       href={place.promoUrl}
                       target="_blank"
                       rel="noopener noreferrer"
-                      className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition-colors"
+                      title={promoPlatform ? `${promoPlatform} bağlantısını aç` : 'Web bağlantısını aç'}
+                      aria-label={promoPlatform ? `${promoPlatform} bağlantısını aç` : 'Web bağlantısını aç'}
+                      className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg bg-white border border-slate-200 hover:bg-slate-100 hover:border-slate-300 shadow-xs shrink-0 transition-transform hover:scale-105"
                     >
-                      <span>Tanıtımı Aç</span>
-                      <ExternalLink className="w-3.5 h-3.5" />
+                      <PromoPlatformIcon url={place.promoUrl} className="w-5 h-5" />
                     </a>
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-slate-800">
+                        {promoPlatform ? `Sosyal Medya · ${promoPlatform}` : 'Web Bağlantısı'}
+                      </p>
+                      <a
+                        href={place.promoUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-mono text-[11px] text-slate-600 hover:text-emerald-700 hover:underline truncate block"
+                      >
+                        {place.promoUrl}
+                      </a>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
                     <button
                       type="button"
                       onClick={() => void handleCopyPromoUrl()}
-                      aria-label="Tanıtım linkini kopyala"
-                      className="min-h-[34px] inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-xs font-medium text-slate-700 hover:bg-rose-50"
+                      aria-label="Sosyal medya linkini kopyala"
+                      className="min-h-[34px] inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-slate-200 text-xs font-medium text-slate-700 hover:bg-slate-100"
                     >
                       {copiedPromoLink ? (
                         <Check className="w-3.5 h-3.5 text-emerald-700" />
@@ -682,7 +688,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                       <button
                         type="button"
                         onClick={() => setEditingPromo(true)}
-                        className="min-h-[34px] px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-rose-100/70"
+                        className="min-h-[34px] px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-slate-200/60"
                       >
                         Değiştir
                       </button>
@@ -726,19 +732,19 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
               ) : (
                 <div className="rounded-xl bg-slate-50 border border-dashed border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
                   <div className="flex items-center gap-2 min-w-0">
-                    <Megaphone className="w-4 h-4 text-slate-400 shrink-0" />
+                    <Globe className="w-4 h-4 text-slate-400 shrink-0" />
                     <span className="text-xs text-slate-500 truncate">
-                      Tanıtım linki eklenmemiş
+                      Sosyal medya linki eklenmemiş
                     </span>
                   </div>
                   {canWritePlaceOrReview ? (
                     <button
                       type="button"
                       onClick={() => setEditingPromo(true)}
-                      className="min-h-[34px] shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                      className="min-h-[34px] shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                     >
-                      <Megaphone className="w-3.5 h-3.5" />
-                      <span>Tanıtım Linki Ekle</span>
+                      <Globe className="w-3.5 h-3.5 text-slate-500" />
+                      <span>Sosyal Medya Ekle</span>
                     </button>
                   ) : (
                     onRequestSignIn && (

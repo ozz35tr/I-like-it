@@ -6,10 +6,10 @@ import {
   ClipboardPaste,
   ExternalLink,
   EyeOff,
+  Globe,
   Link2,
   Loader2,
   MapPin,
-  Megaphone,
   Plus,
   Star,
   UtensilsCrossed,
@@ -31,6 +31,7 @@ import {
 } from '../types/place';
 import { PhotoUploader } from './PhotoUploader';
 import { PriceRatingInput } from './PriceRating';
+import { PromoPlatformIcon } from './PromoPlatformIcon';
 import { StarRatingInput } from './StarRating';
 
 interface AddPlaceModalProps {
@@ -169,7 +170,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   const trimmedPromoInput = promoInput.trim();
   const parsedPromo = trimmedPromoInput
     ? extractPromoLinkInput(trimmedPromoInput)
-    : { url: null, platform: null };
+    : { url: null, platform: null, kind: null };
   const promoLinkStatus: 'idle' | 'valid' | 'invalid' = !trimmedPromoInput
     ? 'idle'
     : parsedPromo.url
@@ -270,7 +271,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     }
     if (trimmedPromoInput && !parsedPromo.url) {
       setError(
-        'Girilen tanıtım bağlantısı geçerli bir web bağlantısı değil (Instagram, YouTube, Facebook vb.). İsterseniz alanı boş bırakarak da kaydedebilirsiniz.'
+        'Girilen sosyal medya bağlantısı geçerli bir web bağlantısı değil (Instagram, YouTube, Facebook vb.). İsterseniz alanı boş bırakarak da kaydedebilirsiniz.'
       );
       return;
     }
@@ -467,16 +468,16 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             )}
           </div>
 
-          {/* Tanıtım Linki */}
+          {/* Sosyal Medya */}
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2">
             <div className="flex items-center justify-between gap-2">
               <label
                 htmlFor="promo-share-link"
                 className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700"
               >
-                <Megaphone className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <Globe className="w-3.5 h-3.5 text-slate-500 shrink-0" />
                 <span>
-                  Tanıtım Linki{' '}
+                  Sosyal Medya{' '}
                   <span className="font-normal text-slate-500">(İsteğe Bağlı)</span>
                 </span>
               </label>
@@ -485,21 +486,26 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                   href={parsedPromo.url}
                   target="_blank"
                   rel="noopener noreferrer"
-                  className="min-h-[30px] shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                  title={parsedPromo.platform ? `${parsedPromo.platform} bağlantısını aç` : 'Web bağlantısını aç'}
+                  aria-label={parsedPromo.platform ? `${parsedPromo.platform} önizleme bağlantısı` : 'Web bağlantısı önizleme'}
+                  className="min-h-[30px] shrink-0 inline-flex items-center gap-1.5 px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-[11px] font-semibold text-slate-700 hover:bg-slate-50"
                 >
+                  <PromoPlatformIcon kind={parsedPromo.kind} className="w-3.5 h-3.5" />
                   <span>{parsedPromo.platform ? `${parsedPromo.platform} Önizle` : 'Önizle'}</span>
-                  <ExternalLink className="w-3 h-3" />
+                  <ExternalLink className="w-3 h-3 text-slate-400" />
                 </a>
               )}
             </div>
 
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              Instagram, YouTube, Facebook veya web sitesi gibi herhangi bir tanıtım bağlantısını ekleyin; daha sonra tek tıkla tanıtıma ulaşabilirsiniz.
+              Instagram, YouTube, Facebook veya web sitesi gibi herhangi bir sosyal medya bağlantısını ekleyin; daha sonra tek tıkla ulaşabilirsiniz.
             </p>
 
             <div className="flex gap-2">
               <div className="relative flex-1">
-                <Megaphone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <span className="absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none flex items-center justify-center">
+                  <PromoPlatformIcon kind={parsedPromo.kind} className="w-4 h-4" />
+                </span>
                 <input
                   ref={promoInputRef}
                   id="promo-share-link"
@@ -545,7 +551,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
             {promoLinkStatus === 'invalid' && (
               <p className="text-[11px] font-medium text-rose-600">
-                Geçerli bir tanıtım linki girin (Instagram, YouTube, Facebook veya web); isterseniz boş bırakabilirsiniz.
+                Geçerli bir sosyal medya linki girin (Instagram, YouTube, Facebook veya web); isterseniz boş bırakabilirsiniz.
               </p>
             )}
           </div>

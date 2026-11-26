@@ -22,7 +22,6 @@ import {
   Loader2,
   LogOut,
   MapPin,
-  Megaphone,
   Navigation,
   Plus,
   Search,
@@ -36,6 +35,7 @@ import { GourmandLogo } from './components/GourmandLogo';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlaceDetailSheet } from './components/PlaceDetailSheet';
 import { PriceRatingDisplay } from './components/PriceRating';
+import { PromoPlatformIcon } from './components/PromoPlatformIcon';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { auth, formatFriendlyFirestoreError, googleProvider } from './lib/firebase';
 import {
@@ -1707,16 +1707,22 @@ export default function App() {
                                 </button>
                               )}
                               {hasPromoLink && place.promoUrl && (
-                                <a
-                                  href={place.promoUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-800 hover:underline py-0.5"
-                                >
-                                  <Megaphone className="w-3.5 h-3.5 shrink-0" />
-                                  <span>{promoPlatform ? `Tanıtım (${promoPlatform})` : 'Tanıtım Linki'}</span>
-                                  <ExternalLink className="w-3 h-3 shrink-0" />
-                                </a>
+                                <div className="pt-0.5">
+                                  <a
+                                    href={place.promoUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title={promoPlatform ? `${promoPlatform} bağlantısını aç` : 'Web bağlantısını aç'}
+                                    aria-label={
+                                      promoPlatform
+                                        ? `${place.name} - ${promoPlatform} bağlantısını aç`
+                                        : `${place.name} - bağlantıyı aç`
+                                    }
+                                    className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-slate-200 bg-white hover:bg-slate-50 hover:border-slate-300 shadow-xs transition-all hover:scale-105"
+                                  >
+                                    <PromoPlatformIcon url={place.promoUrl} className="w-4 h-4" />
+                                  </a>
+                                </div>
                               )}
                             </div>
                           </td>
@@ -1958,11 +1964,15 @@ export default function App() {
                               href={place.promoUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="min-h-[36px] inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-800"
+                              title={promoPlatform ? `${promoPlatform} bağlantısını aç` : 'Web bağlantısını aç'}
+                              aria-label={
+                                promoPlatform
+                                  ? `${place.name} - ${promoPlatform} bağlantısını aç`
+                                  : `${place.name} - bağlantıyı aç`
+                              }
+                              className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white hover:bg-slate-50 shadow-xs transition-transform active:scale-95"
                             >
-                              <Megaphone className="w-3.5 h-3.5" />
-                              <span>{promoPlatform ? `Tanıtım (${promoPlatform})` : 'Tanıtım'}</span>
-                              <ExternalLink className="w-3 h-3" />
+                              <PromoPlatformIcon url={place.promoUrl} className="w-[18px] h-[18px]" />
                             </a>
                           )}
                         </div>

@@ -299,27 +299,57 @@ export function getPlaceExternalMapsUrl(place: {
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 }
 
-export function getPromoPlatformLabel(urlString: string): string | null {
+export type PromoPlatformKind =
+  | 'instagram'
+  | 'youtube'
+  | 'facebook'
+  | 'tiktok'
+  | 'x'
+  | 'linkedin'
+  | 'web';
+
+export function getPromoPlatformKind(urlString: string): PromoPlatformKind {
   try {
     const host = new URL(urlString).hostname.toLowerCase();
-    if (/(^|\.)(instagram\.com|instagr\.am)$/i.test(host)) return 'Instagram';
-    if (/(^|\.)(youtube\.com|youtu\.be|m\.youtube\.com)$/i.test(host)) return 'YouTube';
-    if (/(^|\.)(facebook\.com|fb\.watch|fb\.com|m\.facebook\.com)$/i.test(host)) return 'Facebook';
-    if (/(^|\.)(tiktok\.com|vm\.tiktok\.com)$/i.test(host)) return 'TikTok';
-    if (/(^|\.)(x\.com|twitter\.com)$/i.test(host)) return 'X';
-    return null;
+    if (/(^|\.)(instagram\.com|instagr\.am)$/i.test(host)) return 'instagram';
+    if (/(^|\.)(youtube\.com|youtu\.be|m\.youtube\.com)$/i.test(host)) return 'youtube';
+    if (/(^|\.)(facebook\.com|fb\.watch|fb\.com|m\.facebook\.com)$/i.test(host)) return 'facebook';
+    if (/(^|\.)(tiktok\.com|vm\.tiktok\.com)$/i.test(host)) return 'tiktok';
+    if (/(^|\.)(x\.com|twitter\.com)$/i.test(host)) return 'x';
+    if (/(^|\.)(linkedin\.com|lnkd\.in)$/i.test(host)) return 'linkedin';
+    return 'web';
   } catch {
-    return null;
+    return 'web';
+  }
+}
+
+export function getPromoPlatformLabel(urlString: string): string | null {
+  switch (getPromoPlatformKind(urlString)) {
+    case 'instagram':
+      return 'Instagram';
+    case 'youtube':
+      return 'YouTube';
+    case 'facebook':
+      return 'Facebook';
+    case 'tiktok':
+      return 'TikTok';
+    case 'x':
+      return 'X';
+    case 'linkedin':
+      return 'LinkedIn';
+    default:
+      return null;
   }
 }
 
 export function extractPromoLinkInput(rawText: string): {
   url: string | null;
   platform: string | null;
+  kind: PromoPlatformKind | null;
 } {
   const trimmed = rawText.trim();
   if (!trimmed) {
-    return { url: null, platform: null };
+    return { url: null, platform: null, kind: null };
   }
 
   const urlMatch = trimmed.match(/https?:\/\/[^\s]+/i);
@@ -327,7 +357,7 @@ export function extractPromoLinkInput(rawText: string): {
 
   if (!candidate) {
     const bareMatch = trimmed.match(
-      /(?:www\.)?(?:instagram\.com|instagr\.am|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|x\.com|twitter\.com|[a-z0-9-]+\.[a-z]{2,})(?:\/[^\s]*)?/i
+      /(?:www\.)?(?:instagram\.com|instagr\.am|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|x\.com|twitter\.com|linkedin\.com|lnkd\.in|[a-z0-9-]+\.[a-z]{2,})(?:\/[^\s]*)?/i
     );
     if (bareMatch) {
       candidate = `https://${bareMatch[0].replace(/[),.;]+$/, '')}`;
@@ -335,7 +365,7 @@ export function extractPromoLinkInput(rawText: string): {
   }
 
   if (!candidate) {
-    return { url: null, platform: null };
+    return { url: null, platform: null, kind: null };
   }
 
   try {
@@ -345,13 +375,14 @@ export function extractPromoLinkInput(rawText: string): {
       return {
         url: normalized,
         platform: getPromoPlatformLabel(normalized),
+        kind: getPromoPlatformKind(normalized),
       };
     }
   } catch {
-    return { url: null, platform: null };
+    return { url: null, platform: null, kind: null };
   }
 
-  return { url: null, platform: null };
+  return { url: null, platform: null, kind: null };
 }
 
 
