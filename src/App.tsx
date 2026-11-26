@@ -13,6 +13,8 @@ import {
   ArrowUp,
   ArrowUpDown,
   BadgeTurkishLira,
+  BookmarkCheck,
+  BookmarkPlus,
   CloudUpload,
   Download,
   ExternalLink,
@@ -60,6 +62,7 @@ import {
   removePlace,
   subscribeHiddenWishlistIds,
   subscribeUserOrLocalPlaces,
+  toggleExistingPlaceWishlist,
   toggleWishlistPlaceHidden,
   type CloudActor,
 } from './lib/placeRepository';
@@ -166,6 +169,7 @@ export default function App() {
   const [detailPlace, setDetailPlace] = useState<PlaceItem | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [togglingWishlistId, setTogglingWishlistId] = useState<string | null>(null);
   const [localLegacyCount, setLocalLegacyCount] = useState(0);
   const [legacyCloudCount, setLegacyCloudCount] = useState(0);
   const [migratingLegacy, setMigratingLegacy] = useState(false);
@@ -203,9 +207,19 @@ export default function App() {
       return;
     }
 
+    const prevUid = lastUidRef.current;
     const currentUid = actor?.uid ?? null;
-    const uidChanged = lastUidRef.current !== currentUid;
+    const uidChanged = prevUid !== currentUid;
     lastUidRef.current = currentUid;
+
+    if (uidChanged) {
+      optimisticHiddenOverridesRef.current.clear();
+      userReviewCacheRef.current.clear();
+      setMyReviewedPlaceIds(new Set());
+      if (prevUid !== null) {
+        clearFirestoreReadCaches();
+      }
+    }
 
     setLoadingPlaces(true);
     setSyncError(null);
@@ -218,21 +232,11 @@ export default function App() {
       },
       (err) => {
         setLoadingPlaces(false);
-        if (err.message.includes('Quota exceeded')) {
-          setSyncError(
-            'Ücretsiz günlük Firestore kullanım kotası doldu. Kota yarın sıfırlanır.'
-          );
-        } else {
-          setSyncError('Veriler yüklenirken bir hata oluştu.');
-        }
+        setSyncError(
+          formatFriendlyFirestoreError(err, 'Veriler yüklenirken bir hata oluştu.')
+        );
       }
     );
-
-    if (uidChanged) {
-      optimisticHiddenOverridesRef.current.clear();
-      userReviewCacheRef.current.clear();
-      setMyReviewedPlaceIds(new Set());
-    }
 
     if (!actor) {
       setStatusFilter('visited');
@@ -310,10 +314,60 @@ export default function App() {
 
   const hiddenWishlistSet = useMemo(() => new Set(hiddenWishlistIds), [hiddenWishlistIds]);
 
+  const wishlistPlaceIdSet = useMemo(() => {
+    const set = new Set<string>();
+    for (const p of allPlaces) {
+      if (p.visitStatus === 'wishlist' && p.reviewCount === 0) {
+        set.add(p.id);
+      }
+    }
+    return set;
+  }, [allPlaces]);
+
   const liveDetailPlace = useMemo(() => {
     if (!detailPlace) return null;
-    return allPlaces.find((p) => p.id === detailPlace.id) || null;
+    const detailIsWish = detailPlace.visitStatus === 'wishlist' && detailPlace.reviewCount === 0;
+    return (
+      allPlaces.find(
+        (p) =>
+          p.id === detailPlace.id &&
+          (p.visitStatus === 'wishlist' && p.reviewCount === 0) === detailIsWish
+      ) ||
+      allPlaces.find((p) => p.id === detailPlace.id) ||
+      null
+    );
   }, [allPlaces, detailPlace]);
+
+  const handleTogglePlaceWishlist = async (sourcePlace: PlaceItem) => {
+    if (!actor) {
+      setNotice('Gitmek İstiyorum listenize eklemek için Google hesabınızla giriş yapın.');
+      window.setTimeout(() => setNotice(null), 3200);
+      void handleSignIn();
+      return;
+    }
+    if (togglingWishlistId === sourcePlace.id) return;
+    const currentlyInWishlist = wishlistPlaceIdSet.has(sourcePlace.id);
+    setTogglingWishlistId(sourcePlace.id);
+    try {
+      await toggleExistingPlaceWishlist(actor, sourcePlace, !currentlyInWishlist);
+      if (!currentlyInWishlist && hiddenWishlistSet.has(sourcePlace.id)) {
+        await handleToggleHiddenWishlist(sourcePlace.id, false);
+      }
+      setNotice(
+        currentlyInWishlist
+          ? `${sourcePlace.name} Gitmek İstiyorum listenizden çıkarıldı.`
+          : `${sourcePlace.name} Gitmek İstiyorum listenize eklendi.`
+      );
+      window.setTimeout(() => setNotice(null), 2600);
+    } catch (err) {
+      setNotice(
+        formatFriendlyFirestoreError(err, 'Gitmek İstiyorum listesi güncellenemedi.')
+      );
+      window.setTimeout(() => setNotice(null), 4000);
+    } finally {
+      setTogglingWishlistId((prev) => (prev === sourcePlace.id ? null : prev));
+    }
+  };
 
   const handleToggleHiddenWishlist = async (placeId: string, hide: boolean) => {
     optimisticHiddenOverridesRef.current.set(placeId, hide);
@@ -508,6 +562,7 @@ export default function App() {
   };
 
   const handleSignOut = async () => {
+    clearFirestoreReadCaches();
     await signOut(auth);
     setDetailPlace(null);
   };
@@ -1051,7 +1106,7 @@ export default function App() {
         {notice && (
           <div
             role="status"
-            className="rounded-xl bg-emerald-50 border border-emerald-200 px-3.5 py-2 text-xs font-medium text-emerald-800"
+            className="fixed bottom-20 md:bottom-6 right-4 left-4 md:left-auto md:max-w-sm z-[60] rounded-xl bg-slate-900 text-white shadow-lg border border-slate-700 px-4 py-2.5 text-xs font-medium"
           >
             {notice}
           </div>
@@ -1614,7 +1669,7 @@ export default function App() {
                 <table className="w-full text-left border-collapse">
                   <thead>
                     <tr className="border-b border-slate-200 bg-slate-50/80 text-xs font-semibold text-slate-600">
-                      <th scope="col" className="py-3 px-4 w-[20%]">
+                      <th scope="col" className="py-3 px-3 lg:px-4 w-[19%]">
                         <button
                           type="button"
                           onClick={() => handleSort('name')}
@@ -1624,7 +1679,7 @@ export default function App() {
                           {renderSortIcon('name')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[14%]">
+                      <th scope="col" className="py-3 px-3 lg:px-4 w-[13%]">
                         <button
                           type="button"
                           onClick={() => handleSort('product')}
@@ -1634,7 +1689,7 @@ export default function App() {
                           {renderSortIcon('product')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[13%]">
+                      <th scope="col" className="py-3 px-3 lg:px-4 w-[12%]">
                         <button
                           type="button"
                           onClick={() => handleSort('rating')}
@@ -1645,7 +1700,7 @@ export default function App() {
                           {renderSortIcon('rating')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[11%]">
+                      <th scope="col" className="py-3 px-3 lg:px-4 w-[11%]">
                         <button
                           type="button"
                           onClick={() => handleSort('price')}
@@ -1656,7 +1711,7 @@ export default function App() {
                           {renderSortIcon('price')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[15%]">
+                      <th scope="col" className="py-3 px-3 lg:px-4 w-[14%]">
                         <button
                           type="button"
                           onClick={() => handleSort(userCoords ? 'distance' : 'location')}
@@ -1666,7 +1721,7 @@ export default function App() {
                           {renderSortIcon(userCoords ? 'distance' : 'location')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4">
+                      <th scope="col" className="py-3 px-3 lg:px-4">
                         <button
                           type="button"
                           onClick={() => handleSort('comment')}
@@ -1676,7 +1731,7 @@ export default function App() {
                           {renderSortIcon('comment')}
                         </button>
                       </th>
-                      <th scope="col" className="py-3 px-4 w-[104px] text-right">
+                      <th scope="col" className="py-3 px-3 lg:px-4 w-[148px] text-right">
                         <button
                           type="button"
                           onClick={() => handleSort('date')}
@@ -1699,9 +1754,15 @@ export default function App() {
                         : isLocalDeviceRecord(place.ownerId);
                       const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
                       const isHidden = hiddenWishlistSet.has(place.id);
+                      const canToggleAsWishlist =
+                        !isWishlist &&
+                        (!actor ||
+                          (place.ownerId !== actor.uid && !myReviewedPlaceIds.has(place.id)));
+                      const isMarkedWishlist = actor ? wishlistPlaceIdSet.has(place.id) : false;
+                      const isTogglingWishlist = togglingWishlistId === place.id;
                       return (
                         <tr
-                          key={place.id}
+                          key={`${place.id}-${isWishlist ? 'w' : 'v'}`}
                           className={`hover:bg-slate-50/80 transition-colors align-top ${
                             isHidden ? 'opacity-65' : ''
                           }`}
@@ -1862,14 +1923,26 @@ export default function App() {
                             </button>
                           </td>
 
-                          <td className="py-3.5 px-4 text-right whitespace-nowrap">
-                            <div className="inline-flex items-center justify-end gap-1">
-                              <span className="font-mono text-xs text-slate-400 tabular-nums">
-                                {new Date(place.updatedAt).toLocaleDateString('tr-TR', {
-                                  day: '2-digit',
-                                  month: '2-digit',
-                                })}
-                              </span>
+                          <td className="py-3.5 px-3 lg:px-4 text-right">
+                            <div className="flex flex-col items-end gap-1.5">
+                              <div className="inline-flex items-center justify-end gap-1">
+                                <span className="font-mono text-xs text-slate-400 tabular-nums whitespace-nowrap">
+                                  {new Date(place.updatedAt).toLocaleDateString('tr-TR', {
+                                    day: '2-digit',
+                                    month: '2-digit',
+                                  })}
+                                </span>
+                                {canDeletePlace && (
+                                  <button
+                                    type="button"
+                                    onClick={() => void removePlace(actor, place.id, isWishlist)}
+                                    aria-label={`${place.name} kaydını sil`}
+                                    className="min-h-[30px] min-w-[30px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
                               {isWishlist && (
                                 <button
                                   type="button"
@@ -1882,7 +1955,7 @@ export default function App() {
                                   aria-label={
                                     isHidden ? `${place.name} kaydını göster` : `${place.name} kaydını gizle`
                                   }
-                                  className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors ${
+                                  className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border whitespace-nowrap transition-colors ${
                                     isHidden
                                       ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
                                       : 'bg-white text-slate-600 border-slate-200 hover:text-slate-900 hover:bg-slate-50'
@@ -1901,14 +1974,35 @@ export default function App() {
                                   )}
                                 </button>
                               )}
-                              {canDeletePlace && (
+                              {canToggleAsWishlist && (
                                 <button
                                   type="button"
-                                  onClick={() => void removePlace(actor, place.id, isWishlist)}
-                                  aria-label={`${place.name} kaydını sil`}
-                                  className="min-h-[34px] min-w-[34px] flex items-center justify-center rounded-lg text-slate-400 hover:text-rose-600 hover:bg-rose-50"
+                                  disabled={isTogglingWishlist}
+                                  onClick={() => void handleTogglePlaceWishlist(place)}
+                                  title={
+                                    isMarkedWishlist
+                                      ? 'Gitmek İstiyorum listemde — kaldırmak için tıklayın'
+                                      : 'Bu mekanı Gitmek İstiyorum listeme ekle'
+                                  }
+                                  aria-label={
+                                    isMarkedWishlist
+                                      ? `${place.name} kaydını Gitmek İstiyorum listemden çıkar`
+                                      : `${place.name} kaydını Gitmek İstiyorum olarak işaretle`
+                                  }
+                                  className={`min-h-[32px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border whitespace-nowrap transition-colors disabled:opacity-50 ${
+                                    isMarkedWishlist
+                                      ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                      : 'bg-white text-slate-600 border-slate-200 hover:text-amber-800 hover:border-amber-200 hover:bg-amber-50/70'
+                                  }`}
                                 >
-                                  <Trash2 className="w-3.5 h-3.5" />
+                                  {isTogglingWishlist ? (
+                                    <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+                                  ) : isMarkedWishlist ? (
+                                    <BookmarkCheck className="w-3.5 h-3.5 text-amber-700" />
+                                  ) : (
+                                    <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                                  )}
+                                  <span>{isMarkedWishlist ? 'Listemde' : 'Gitmek İstiyorum'}</span>
                                 </button>
                               )}
                             </div>
@@ -1983,8 +2077,17 @@ export default function App() {
                     : isLocalDeviceRecord(place.ownerId);
                   const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
                   const isHidden = hiddenWishlistSet.has(place.id);
+                  const canToggleAsWishlist =
+                    !isWishlist &&
+                    (!actor ||
+                      (place.ownerId !== actor.uid && !myReviewedPlaceIds.has(place.id)));
+                  const isMarkedWishlist = actor ? wishlistPlaceIdSet.has(place.id) : false;
+                  const isTogglingWishlist = togglingWishlistId === place.id;
                   return (
-                    <div key={place.id} className={`p-3.5 space-y-2 ${isHidden ? 'opacity-65' : ''}`}>
+                    <div
+                      key={`${place.id}-${isWishlist ? 'w' : 'v'}`}
+                      className={`p-3.5 space-y-2 ${isHidden ? 'opacity-65' : ''}`}
+                    >
                       <div className="flex items-start justify-between gap-3">
                         <button
                           type="button"
@@ -2094,7 +2197,33 @@ export default function App() {
                           )}
                         </div>
 
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex items-center gap-1.5 flex-wrap justify-end">
+                          {canToggleAsWishlist && (
+                            <button
+                              type="button"
+                              disabled={isTogglingWishlist}
+                              onClick={() => void handleTogglePlaceWishlist(place)}
+                              aria-label={
+                                isMarkedWishlist
+                                  ? `${place.name} kaydını Gitmek İstiyorum listemden çıkar`
+                                  : `${place.name} kaydını Gitmek İstiyorum olarak işaretle`
+                              }
+                              className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors disabled:opacity-50 ${
+                                isMarkedWishlist
+                                  ? 'bg-amber-50 text-amber-800 border-amber-200 hover:bg-amber-100'
+                                  : 'bg-white text-slate-600 border-slate-200 hover:text-amber-800 hover:border-amber-200 hover:bg-amber-50/70'
+                              }`}
+                            >
+                              {isTogglingWishlist ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin text-amber-700" />
+                              ) : isMarkedWishlist ? (
+                                <BookmarkCheck className="w-3.5 h-3.5 text-amber-700" />
+                              ) : (
+                                <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                              )}
+                              <span>{isMarkedWishlist ? 'Listemde' : 'Gitmek İstiyorum'}</span>
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => setDetailPlace(place)}
@@ -2186,7 +2315,9 @@ export default function App() {
           actor={actor}
           place={liveDetailPlace}
           isHiddenInWishlist={hiddenWishlistSet.has(liveDetailPlace.id)}
+          isInUserWishlist={wishlistPlaceIdSet.has(liveDetailPlace.id)}
           onToggleHiddenWishlist={actor ? handleToggleHiddenWishlist : undefined}
+          onToggleUserWishlist={actor ? handleTogglePlaceWishlist : undefined}
           onRequestSignIn={() => void handleSignIn()}
           onClose={() => setDetailPlace(null)}
           onDeleted={() => setDetailPlace(null)}

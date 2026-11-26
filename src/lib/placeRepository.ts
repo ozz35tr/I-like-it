@@ -15,6 +15,7 @@ import {
   updateLocalReviewInPlace,
 } from './localDb';
 import {
+  addExistingPlaceToWishlist,
   addReviewToPlace,
   clearFirestoreReadCaches,
   createPlaceWithInitialReview,
@@ -87,7 +88,7 @@ export function subscribeUserOrLocalPlaces(
 
     const emit = () => {
       if (sharedReady || wishlistReady) {
-        onData(mergePlaces(sharedPlaces, wishlistPlaces));
+        onData([...sharedPlaces, ...wishlistPlaces].sort((a, b) => b.updatedAt - a.updatedAt));
       }
     };
 
@@ -118,9 +119,8 @@ export function subscribeUserOrLocalPlaces(
         wishlistReady = true;
         if (sharedReady) {
           emit();
-        } else {
-          onError(err);
         }
+        onError(err);
       }
     );
 
@@ -342,6 +342,17 @@ export async function deleteReview(
     return deleteReviewFromPlace(placeId, reviewId);
   }
   return deleteLocalReviewFromPlace(placeId, reviewId);
+}
+
+export async function toggleExistingPlaceWishlist(
+  actor: CloudActor,
+  sourcePlace: PlaceItem,
+  add: boolean
+): Promise<void> {
+  if (add) {
+    return addExistingPlaceToWishlist(actor.uid, actor.authorName, sourcePlace);
+  }
+  return deletePlace(actor.uid, sourcePlace.id, true);
 }
 
 export async function removePlace(

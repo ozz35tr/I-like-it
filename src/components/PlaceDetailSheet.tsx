@@ -2,6 +2,8 @@ import React, { useEffect, useState } from 'react';
 import {
   BadgeTurkishLira,
   Bookmark,
+  BookmarkCheck,
+  BookmarkPlus,
   Check,
   CheckCircle2,
   Copy,
@@ -58,7 +60,9 @@ interface PlaceDetailSheetProps {
   actor?: CloudActor | null;
   place: PlaceItem;
   isHiddenInWishlist?: boolean;
+  isInUserWishlist?: boolean;
   onToggleHiddenWishlist?: (placeId: string, hide: boolean) => Promise<void> | void;
+  onToggleUserWishlist?: (place: PlaceItem) => Promise<void> | void;
   onRequestSignIn?: () => void;
   onClose: () => void;
   onDeleted: () => void;
@@ -77,7 +81,9 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   actor,
   place,
   isHiddenInWishlist = false,
+  isInUserWishlist = false,
   onToggleHiddenWishlist,
+  onToggleUserWishlist,
   onRequestSignIn,
   onClose,
   onDeleted,
@@ -85,6 +91,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [loadingReviews, setLoadingReviews] = useState(true);
   const [showReviewForm, setShowReviewForm] = useState(false);
+  const [togglingUserWishlist, setTogglingUserWishlist] = useState(false);
 
   const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5>(5);
   const [priceRating, setPriceRating] = useState<1 | 2 | 3 | 4 | 5>(3);
@@ -127,6 +134,9 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const canWritePlaceOrReview = Boolean(actor) || isLocalPlace;
   const canManagePlace = actor ? place.ownerId === actor.uid : isLocalPlace;
   const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
+  const hasUserVisited = Boolean(
+    actor && (place.ownerId === actor.uid || reviews.some((r) => r.ownerId === actor.uid))
+  );
 
   useEffect(() => {
     setLinkDraft(place.mapsUrl || '');
@@ -560,6 +570,55 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                   </a>
                 )}
               </div>
+
+              {!isWishlist && !hasUserVisited && (
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-amber-50/60 border border-amber-200/80 px-3 py-2">
+                  <span className="text-xs text-amber-950">
+                    {isInUserWishlist
+                      ? 'Bu mekan kişisel Gitmek İstiyorum listenizde.'
+                      : 'Henüz gitmediniz mi? Kişisel listenize ekleyebilirsiniz.'}
+                  </span>
+                  {actor && onToggleUserWishlist ? (
+                    <button
+                      type="button"
+                      disabled={togglingUserWishlist}
+                      onClick={async () => {
+                        setTogglingUserWishlist(true);
+                        try {
+                          await onToggleUserWishlist(place);
+                        } finally {
+                          setTogglingUserWishlist(false);
+                        }
+                      }}
+                      className={`min-h-[36px] shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold border transition-colors disabled:opacity-50 ${
+                        isInUserWishlist
+                          ? 'bg-amber-100 border-amber-300 text-amber-950 hover:bg-amber-200/70'
+                          : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-100/70'
+                      }`}
+                    >
+                      {togglingUserWishlist ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : isInUserWishlist ? (
+                        <BookmarkCheck className="w-3.5 h-3.5 text-amber-700" />
+                      ) : (
+                        <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                      )}
+                      <span>{isInUserWishlist ? 'Gitmek İstiyorum Listemde' : 'Gitmek İstiyorum'}</span>
+                    </button>
+                  ) : (
+                    onRequestSignIn && (
+                      <button
+                        type="button"
+                        onClick={onRequestSignIn}
+                        className="min-h-[36px] shrink-0 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white border border-amber-300 text-xs font-semibold text-amber-900 hover:bg-amber-100/70"
+                      >
+                        <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                        <span>Gitmek İstiyorum için Giriş Yap</span>
+                      </button>
+                    )
+                  )}
+                </div>
+              )}
 
               {hasSavedMapsUrl && !editingLink ? (
                 <div className="rounded-xl bg-slate-50 border border-slate-200 px-3 py-2 flex items-center justify-between gap-2">

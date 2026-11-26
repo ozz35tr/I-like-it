@@ -289,14 +289,14 @@ function getKnownSharedPlace(placeId: string): PlaceItem | undefined {
 }
 
 function isKnownWishlistWithNoReviews(placeId: string): boolean {
+  const shared = getKnownSharedPlace(placeId);
+  if (shared) {
+    return shared.visitStatus === 'wishlist' && shared.reviewCount === 0;
+  }
   for (const state of wishlistStates.values()) {
     if (state.items?.some((p) => p.id === placeId)) {
       return true;
     }
-  }
-  const shared = getKnownSharedPlace(placeId);
-  if (shared && shared.visitStatus === 'wishlist' && shared.reviewCount === 0) {
-    return true;
   }
   return false;
 }
@@ -1214,6 +1214,122 @@ export async function createPlaceWithInitialReview(
   }
 }
 
+export async function addExistingPlaceToWishlist(
+  userId: string,
+  authorName: string,
+  sourcePlace: PlaceItem
+): Promise<void> {
+  if (!/^[a-zA-Z0-9_-]{1,128}$/.test(sourcePlace.id)) {
+    throw new Error('Geçersiz mekan kimliği.');
+  }
+
+  const wishlistPath = `users/${userId}/wishlist/${sourcePlace.id}`;
+  const cleanAuthor = resolveSafeAuthorName(authorName);
+  const rawName = (sourcePlace.name || '').trim();
+  const cleanName = (rawName.length >= STORAGE_LIMITS.NAME_MIN ? rawName : 'Mekan').slice(
+    0,
+    STORAGE_LIMITS.NAME_MAX
+  );
+  const cleanCategory = normalizeCategory(sourcePlace.category);
+  const { cuisineTypes, cuisineType } = normalizeCuisineTags(
+    sourcePlace.cuisineTypes,
+    sourcePlace.cuisineType
+  );
+  const cleanLocationArea = (sourcePlace.locationArea || '')
+    .trim()
+    .slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX);
+  const cleanLat = normalizeCoord(sourcePlace.lat, -90, 90);
+  const cleanLng = normalizeCoord(sourcePlace.lng, -180, 180);
+  const cleanMapsUrl = (sourcePlace.mapsUrl || '').trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
+  const cleanPromoUrl = (sourcePlace.promoUrl || '').trim().slice(0, STORAGE_LIMITS.PROMO_URL_MAX);
+  const cleanCover =
+    typeof sourcePlace.coverImage === 'string' && sourcePlace.coverImage.length <= 160000
+      ? sourcePlace.coverImage
+      : '';
+  const now = Date.now();
+
+  try {
+    const wishRef = doc(db, wishlistPath);
+    await runTransaction(db, async (tx) => {
+      const existingSnap = await tx.get(wishRef);
+      if (existingSnap.exists()) {
+        tx.update(wishRef, {
+          name: cleanName,
+          category: cleanCategory,
+          cuisineType,
+          cuisineTypes,
+          locationArea: cleanLocationArea,
+          lat: cleanLat,
+          lng: cleanLng,
+          mapsUrl: cleanMapsUrl,
+          promoUrl: cleanPromoUrl,
+          coverImage: cleanCover,
+          updatedAt: serverTimestamp(),
+        });
+      } else {
+        tx.set(wishRef, {
+          ownerId: userId,
+          authorName: cleanAuthor,
+          visibility: 'private',
+          name: cleanName,
+          category: cleanCategory,
+          visitStatus: 'wishlist',
+          cuisineType,
+          cuisineTypes,
+          locationArea: cleanLocationArea,
+          lat: cleanLat,
+          lng: cleanLng,
+          mapsUrl: cleanMapsUrl,
+          promoUrl: cleanPromoUrl,
+          coverImage: cleanCover,
+          latestComment: '',
+          avgRating: 0,
+          reviewCount: 0,
+          ratingSum: 0,
+          avgPriceRating: 0,
+          priceRatingCount: 0,
+          priceRatingSum: 0,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        });
+      }
+    });
+
+    const newWishPlace: PlaceItem = {
+      id: sourcePlace.id,
+      ownerId: userId,
+      authorName: cleanAuthor,
+      name: cleanName,
+      category: cleanCategory,
+      visitStatus: 'wishlist',
+      cuisineType,
+      cuisineTypes,
+      locationArea: cleanLocationArea,
+      lat: cleanLat,
+      lng: cleanLng,
+      mapsUrl: cleanMapsUrl,
+      promoUrl: cleanPromoUrl,
+      coverImage: cleanCover,
+      latestComment: '',
+      avgRating: 0,
+      reviewCount: 0,
+      ratingSum: 0,
+      avgPriceRating: 0,
+      priceRatingCount: 0,
+      priceRatingSum: 0,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const prevWish = wishlistStates.get(userId)?.items || hydrateWishlistFromStorage(userId) || [];
+    const filtered = prevWish.filter((p) => p.id !== sourcePlace.id);
+    persistWishlistPlaces(userId, [newWishPlace, ...filtered], now);
+    notifyWishlist(userId);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, wishlistPath);
+  }
+}
+
 function patchPlaceInLocalStores(
   placeId: string,
   patch: Partial<PlaceItem>,
@@ -1377,9 +1493,11 @@ export async function addReviewToPlace(
   try {
     const outcome = await runTransaction(db, async (tx) => {
       const placeRef = doc(db, placePath);
+      const wishRef = doc(db, wishPath);
       const snap = await tx.get(placeRef);
 
       if (snap.exists()) {
+        const wishSnap = await tx.get(wishRef);
         const data = snap.data();
         const nextCount = (typeof data.reviewCount === 'number' ? data.reviewCount : 0) + 1;
         const nextSum = (typeof data.ratingSum === 'number' ? data.ratingSum : 0) + input.rating;
@@ -1421,8 +1539,12 @@ export async function addReviewToPlace(
           updatedAt: serverTimestamp(),
         });
 
+        if (wishSnap.exists()) {
+          tx.delete(wishRef);
+        }
+
         return {
-          promotedFromWishlist: false,
+          promotedFromWishlist: wishSnap.exists(),
           updatedPlace: {
             ...mapPlaceDoc(input.placeId, data),
             avgRating: nextAvg,
@@ -1439,7 +1561,6 @@ export async function addReviewToPlace(
         };
       }
 
-      const wishRef = doc(db, wishPath);
       const wishSnap = await tx.get(wishRef);
       if (!wishSnap.exists()) {
         throw new Error('Mekan bulunamadı.');
