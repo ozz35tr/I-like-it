@@ -6,9 +6,12 @@ const PORT = Number(process.env.PORT) || 3000;
 
 const ALLOWED_MAPS_HOSTS = [
   'maps.app.goo.gl',
+  'search.app.goo.gl',
   'goo.gl',
   'app.goo.gl',
   'g.page',
+  'share.google',
+  'www.share.google',
   'maps.google.com',
   'www.google.com',
   'google.com',
@@ -53,13 +56,35 @@ function extractMetaTag(html: string, property: string): string {
   return reverseMatch?.[1] ? decodeHtmlEntities(reverseMatch[1].trim()) : '';
 }
 
-function parseDetailsFromUrl(urlStr: string): {
+function parseDetailsFromUrl(urlStr: string, depth = 0): {
   name: string;
   lat?: number;
   lng?: number;
+  unwrappedUrl?: string;
 } {
   try {
     const parsed = new URL(urlStr);
+    const pathnameLower = parsed.pathname.toLowerCase();
+    const isSorryPage = pathnameLower === '/sorry' || pathnameLower.startsWith('/sorry/');
+    const isShareGoogleRedirect =
+      parsed.hostname.toLowerCase() === 'share.google' ||
+      parsed.hostname.toLowerCase() === 'www.share.google' ||
+      pathnameLower === '/share.google';
+
+    if (isSorryPage && depth < 2) {
+      const continueParam = parsed.searchParams.get('continue');
+      if (continueParam && isAllowedGoogleMapsUrl(continueParam)) {
+        const inner = parseDetailsFromUrl(continueParam, depth + 1);
+        return {
+          name: inner.name,
+          lat: inner.lat,
+          lng: inner.lng,
+          unwrappedUrl: inner.unwrappedUrl || continueParam,
+        };
+      }
+      return { name: '' };
+    }
+
     let name = '';
 
     const placeMatch = parsed.pathname.match(/\/maps\/place\/([^/]+)/i);
@@ -82,7 +107,7 @@ function parseDetailsFromUrl(urlStr: string): {
         lat = pLat;
         lng = pLng;
       }
-    } else if (qParam && !name) {
+    } else if (qParam && !name && !isShareGoogleRedirect && !isSorryPage) {
       name = qParam.trim();
     }
 
@@ -96,7 +121,7 @@ async function startServer() {
   const app = express();
 
   /**
-   * Resolves shortened Google Maps share links (e.g. https://maps.app.goo.gl/...)
+   * Resolves shortened Google Maps share links (e.g. https://maps.app.goo.gl/... or https://share.google/...)
    * safely by following redirects only across allowlisted Google domains.
    */
   app.get('/api/resolve-maps-link', async (req, res) => {
@@ -142,11 +167,35 @@ async function startServer() {
         break;
       }
 
-      const urlInfo = parseDetailsFromUrl(currentUrl);
+      let urlInfo = parseDetailsFromUrl(currentUrl);
+      if (urlInfo.unwrappedUrl) {
+        currentUrl = urlInfo.unwrappedUrl;
+      }
       let name = urlInfo.name;
       let address = '';
 
       if (finalHtml) {
+        const continueMatch = finalHtml.match(
+          /<input[^>]+name=["']continue["'][^>]+value=["']([^"']+)["']/i
+        );
+        const titleUrlMatch = finalHtml.match(/<title>(https?:\/\/[^<]+)<\/title>/i);
+        const embeddedTargetRaw = decodeHtmlEntities(
+          (continueMatch?.[1] || titleUrlMatch?.[1] || '').trim()
+        );
+        if (embeddedTargetRaw) {
+          const allowedEmbedded = isAllowedGoogleMapsUrl(embeddedTargetRaw);
+          if (allowedEmbedded) {
+            const embeddedInfo = parseDetailsFromUrl(allowedEmbedded.toString());
+            if (!name && embeddedInfo.name) {
+              name = embeddedInfo.name;
+            }
+            if (urlInfo.lat === undefined && embeddedInfo.lat !== undefined) {
+              urlInfo = { ...urlInfo, lat: embeddedInfo.lat, lng: embeddedInfo.lng };
+            }
+            currentUrl = embeddedInfo.unwrappedUrl || allowedEmbedded.toString();
+          }
+        }
+
         const ogTitle = extractMetaTag(finalHtml, 'og:title');
         const ogDesc = extractMetaTag(finalHtml, 'og:description');
         const cleanOgTitle = ogTitle
@@ -155,6 +204,7 @@ async function startServer() {
 
         if (
           cleanOgTitle &&
+          !/^https?:\/\//i.test(cleanOgTitle) &&
           !/^Google\s*(Maps|Haritalar)$/i.test(cleanOgTitle) &&
           (!name || name.length < 2)
         ) {

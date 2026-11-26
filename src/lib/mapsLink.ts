@@ -10,9 +10,12 @@ export interface ResolvedMapsLink {
 
 const ALLOWED_MAPS_HOSTS = [
   'maps.app.goo.gl',
+  'search.app.goo.gl',
   'goo.gl',
   'app.goo.gl',
   'g.page',
+  'share.google',
+  'www.share.google',
   'maps.google.com',
   'www.google.com',
   'google.com',
@@ -205,9 +208,31 @@ export function extractSharedMapsInput(rawText: string): {
   return { url: null, sharedLabel: '' };
 }
 
-export function parseGoogleMapsUrlLocally(urlString: string): Partial<ResolvedMapsLink> {
+export function parseGoogleMapsUrlLocally(urlString: string, depth = 0): Partial<ResolvedMapsLink> {
   try {
     const parsed = new URL(urlString);
+    const pathnameLower = parsed.pathname.toLowerCase();
+    const isSorryPage = pathnameLower === '/sorry' || pathnameLower.startsWith('/sorry/');
+    const isShareGoogleRedirect =
+      parsed.hostname.toLowerCase() === 'share.google' ||
+      parsed.hostname.toLowerCase() === 'www.share.google' ||
+      pathnameLower === '/share.google';
+
+    if (isSorryPage && depth < 2) {
+      const continueParam = parsed.searchParams.get('continue');
+      if (continueParam) {
+        try {
+          const continueParsed = new URL(continueParam);
+          if (isAllowedGoogleMapsHost(continueParsed.hostname)) {
+            return parseGoogleMapsUrlLocally(continueParsed.toString(), depth + 1);
+          }
+        } catch {
+          // Ignore malformed continue param
+        }
+      }
+      return { name: '', resolvedUrl: urlString };
+    }
+
     let name = '';
     let lat: number | undefined;
     let lng: number | undefined;
@@ -230,7 +255,7 @@ export function parseGoogleMapsUrlLocally(urlString: string): Partial<ResolvedMa
         lat = parsedLat;
         lng = parsedLng;
       }
-    } else if (qParam && !name) {
+    } else if (qParam && !name && !isShareGoogleRedirect && !isSorryPage) {
       name = qParam.trim();
     }
 
