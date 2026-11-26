@@ -32,6 +32,7 @@ export interface PlaceItem {
   lat: number | null;
   lng: number | null;
   mapsUrl: string;
+  promoUrl?: string;
   coverImage: string;
   latestComment: string;
   avgRating: number;
@@ -95,6 +96,7 @@ export const STORAGE_LIMITS = {
   NAME_MIN: 2,
   NAME_MAX: 100,
   MAPS_URL_MAX: 600,
+  PROMO_URL_MAX: 600,
   COMMENT_MIN: 2,
   COMMENT_MAX: 1500,
   MAX_PHOTOS: 2,

@@ -74,6 +74,7 @@ service cloud.firestore {
           'lat',
           'lng',
           'mapsUrl',
+          'promoUrl',
           'coverImage',
           'latestComment',
           'avgRating',
@@ -101,6 +102,7 @@ service cloud.firestore {
         (!('lng' in data) || data.lng == null || (data.lng is number && data.lng >= -180 && data.lng <= 180)) &&
         data.mapsUrl is string &&
         data.mapsUrl.size() <= 600 &&
+        (!('promoUrl' in data) || (data.promoUrl is string && data.promoUrl.size() <= 600)) &&
         data.coverImage is string &&
         data.coverImage.size() <= 160000 &&
         data.latestComment is string &&
@@ -223,6 +225,7 @@ service cloud.firestore {
               'name',
               'category',
               'mapsUrl',
+              'promoUrl',
               'cuisineType',
               'cuisineTypes',
               'locationArea',
@@ -235,6 +238,7 @@ service cloud.firestore {
           (
             incoming().diff(existing()).affectedKeys().hasOnly([
               'category',
+              'promoUrl',
               'cuisineType',
               'cuisineTypes',
               'locationArea',
@@ -335,6 +339,7 @@ service cloud.firestore {
           'name',
           'category',
           'mapsUrl',
+          'promoUrl',
           'cuisineType',
           'cuisineTypes',
           'locationArea',

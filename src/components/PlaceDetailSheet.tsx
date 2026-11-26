@@ -11,6 +11,7 @@ import {
   Link2,
   Loader2,
   MapPin,
+  Megaphone,
   MessageSquarePlus,
   Pencil,
   Plus,
@@ -21,7 +22,13 @@ import {
   X,
 } from 'lucide-react';
 import { formatFriendlyFirestoreError } from '../lib/firebase';
-import { extractSharedMapsInput, getPlaceExternalMapsUrl, resolveGoogleMapsLink } from '../lib/mapsLink';
+import {
+  extractPromoLinkInput,
+  extractSharedMapsInput,
+  getPlaceExternalMapsUrl,
+  getPromoPlatformLabel,
+  resolveGoogleMapsLink,
+} from '../lib/mapsLink';
 import {
   addReview,
   deleteReview,
@@ -30,6 +37,7 @@ import {
   subscribeUserOrLocalPlaceReviews,
   updateMapsUrl,
   updatePlaceMetadata,
+  updatePromoUrl,
   updateReview,
   type CloudActor,
 } from '../lib/placeRepository';
@@ -100,6 +108,12 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [linkDraft, setLinkDraft] = useState(place.mapsUrl || '');
   const [linkError, setLinkError] = useState<string | null>(null);
 
+  const [editingPromo, setEditingPromo] = useState(false);
+  const [promoDraft, setPromoDraft] = useState(place.promoUrl || '');
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [savingPromo, setSavingPromo] = useState(false);
+  const [copiedPromoLink, setCopiedPromoLink] = useState(false);
+
   // Multi-product & location metadata editing (available for updating existing records too)
   const [editingMeta, setEditingMeta] = useState(false);
   const [selectedCuisines, setSelectedCuisines] = useState<string[]>(place.cuisineTypes || []);
@@ -116,6 +130,10 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   useEffect(() => {
     setLinkDraft(place.mapsUrl || '');
   }, [place.mapsUrl]);
+
+  useEffect(() => {
+    setPromoDraft(place.promoUrl || '');
+  }, [place.promoUrl]);
 
   useEffect(() => {
     setSelectedCuisines(place.cuisineTypes || []);
@@ -256,6 +274,42 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
     }
   };
 
+  const handleSavePromoLink = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const trimmed = promoDraft.trim();
+    if (!trimmed) {
+      setSavingPromo(true);
+      try {
+        await updatePromoUrl(actor, place.id, '', isWishlist);
+        setEditingPromo(false);
+        setPromoError(null);
+      } catch (err) {
+        setPromoError(formatFriendlyFirestoreError(err, 'Tanıtım linki güncellenemedi.'));
+      } finally {
+        setSavingPromo(false);
+      }
+      return;
+    }
+
+    const { url } = extractPromoLinkInput(trimmed);
+    if (!url) {
+      setPromoError('Geçerli bir tanıtım bağlantısı girin (Instagram, YouTube, Facebook veya web).');
+      return;
+    }
+
+    setSavingPromo(true);
+    setPromoError(null);
+    try {
+      await updatePromoUrl(actor, place.id, url, isWishlist);
+      setPromoDraft(url);
+      setEditingPromo(false);
+    } catch (err) {
+      setPromoError(formatFriendlyFirestoreError(err, 'Tanıtım linki güncellenemedi.'));
+    } finally {
+      setSavingPromo(false);
+    }
+  };
+
   const toggleCuisineTag = (label: string) => {
     const clean = label.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
     if (!clean) return;
@@ -336,6 +390,8 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   };
 
   const hasSavedMapsUrl = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
+  const hasSavedPromoUrl = Boolean(place.promoUrl && /^https?:\/\//i.test(place.promoUrl));
+  const promoPlatform = hasSavedPromoUrl && place.promoUrl ? getPromoPlatformLabel(place.promoUrl) : null;
   const fallbackSearchUrl = getPlaceExternalMapsUrl(place);
 
   const handleCopyMapsUrl = async () => {
@@ -344,6 +400,17 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
       await navigator.clipboard.writeText(place.mapsUrl);
       setCopiedLink(true);
       window.setTimeout(() => setCopiedLink(false), 1800);
+    } catch {
+      // Ignore clipboard failure
+    }
+  };
+
+  const handleCopyPromoUrl = async () => {
+    if (!hasSavedPromoUrl || !place.promoUrl || !navigator.clipboard?.writeText) return;
+    try {
+      await navigator.clipboard.writeText(place.promoUrl);
+      setCopiedPromoLink(true);
+      window.setTimeout(() => setCopiedPromoLink(false), 1800);
     } catch {
       // Ignore clipboard failure
     }
@@ -571,6 +638,118 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                       <Link2 className="w-3.5 h-3.5" />
                       <span>Link Ekle</span>
                     </button>
+                  )}
+                </div>
+              )}
+
+              {/* Tanıtım Linki */}
+              {hasSavedPromoUrl && !editingPromo ? (
+                <div className="rounded-xl bg-rose-50/60 border border-rose-200/80 px-3 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Megaphone className="w-4 h-4 text-rose-600 shrink-0" />
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold text-rose-900">
+                        {promoPlatform ? `Tanıtım Linki · ${promoPlatform}` : 'Tanıtım Linki'}
+                      </p>
+                      <p className="font-mono text-[11px] text-slate-600 truncate">
+                        {place.promoUrl}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 shrink-0">
+                    <a
+                      href={place.promoUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-rose-600 text-white text-xs font-semibold hover:bg-rose-700 transition-colors"
+                    >
+                      <span>Tanıtımı Aç</span>
+                      <ExternalLink className="w-3.5 h-3.5" />
+                    </a>
+                    <button
+                      type="button"
+                      onClick={() => void handleCopyPromoUrl()}
+                      aria-label="Tanıtım linkini kopyala"
+                      className="min-h-[34px] inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-white border border-rose-200 text-xs font-medium text-slate-700 hover:bg-rose-50"
+                    >
+                      {copiedPromoLink ? (
+                        <Check className="w-3.5 h-3.5 text-emerald-700" />
+                      ) : (
+                        <Copy className="w-3.5 h-3.5" />
+                      )}
+                    </button>
+                    {canWritePlaceOrReview && (
+                      <button
+                        type="button"
+                        onClick={() => setEditingPromo(true)}
+                        className="min-h-[34px] px-2 py-1 rounded-lg text-xs font-medium text-slate-600 hover:bg-rose-100/70"
+                      >
+                        Değiştir
+                      </button>
+                    )}
+                  </div>
+                </div>
+              ) : editingPromo && canWritePlaceOrReview ? (
+                <form onSubmit={(e) => void handleSavePromoLink(e)} className="space-y-2">
+                  <div className="flex gap-2">
+                    <input
+                      type="text"
+                      inputMode="url"
+                      maxLength={STORAGE_LIMITS.PROMO_URL_MAX}
+                      value={promoDraft}
+                      onChange={(e) => setPromoDraft(e.target.value)}
+                      placeholder="https://... (Instagram, YouTube, Facebook veya web)"
+                      className="flex-1 min-h-[44px] px-3 py-1.5 rounded-xl border border-slate-300 text-base sm:text-xs text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                    />
+                    <button
+                      type="submit"
+                      disabled={savingPromo}
+                      className="min-h-[40px] px-3.5 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 disabled:opacity-50 inline-flex items-center gap-1"
+                    >
+                      {savingPromo && <Loader2 className="w-3.5 h-3.5 animate-spin" />}
+                      <span>Kaydet</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingPromo(false);
+                        setPromoDraft(place.promoUrl || '');
+                        setPromoError(null);
+                      }}
+                      className="min-h-[40px] px-3 rounded-xl border border-slate-200 text-xs font-medium text-slate-600"
+                    >
+                      İptal
+                    </button>
+                  </div>
+                  {promoError && <p className="text-xs text-rose-600">{promoError}</p>}
+                </form>
+              ) : (
+                <div className="rounded-xl bg-slate-50 border border-dashed border-slate-200 px-3 py-2 flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Megaphone className="w-4 h-4 text-slate-400 shrink-0" />
+                    <span className="text-xs text-slate-500 truncate">
+                      Tanıtım linki eklenmemiş
+                    </span>
+                  </div>
+                  {canWritePlaceOrReview ? (
+                    <button
+                      type="button"
+                      onClick={() => setEditingPromo(true)}
+                      className="min-h-[34px] shrink-0 inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white border border-slate-200 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                    >
+                      <Megaphone className="w-3.5 h-3.5" />
+                      <span>Tanıtım Linki Ekle</span>
+                    </button>
+                  ) : (
+                    onRequestSignIn && (
+                      <button
+                        type="button"
+                        onClick={onRequestSignIn}
+                        className="min-h-[34px] shrink-0 px-2.5 py-1 rounded-lg text-xs font-semibold text-slate-600 hover:text-emerald-700 hover:bg-emerald-50"
+                      >
+                        Eklemek için giriş yap
+                      </button>
+                    )
                   )}
                 </div>
               )}

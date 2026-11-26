@@ -22,6 +22,7 @@ import {
   Loader2,
   LogOut,
   MapPin,
+  Megaphone,
   Navigation,
   Plus,
   Search,
@@ -44,6 +45,7 @@ import {
 } from './lib/localDb';
 import {
   formatDistanceLabel,
+  getPromoPlatformLabel,
   haversineDistanceKm,
   matchesDetectedArea,
   matchesMultiWordQuery,
@@ -51,6 +53,7 @@ import {
   reverseGeocodeArea,
 } from './lib/mapsLink';
 import {
+  clearFirestoreReadCaches,
   exportBackup,
   importBackup,
   isLocalDeviceRecord,
@@ -191,7 +194,17 @@ export default function App() {
     return () => unsub();
   }, []);
 
+  const lastUidRef = useRef<string | null>(null);
+
   useEffect(() => {
+    if (!authReady) {
+      return;
+    }
+
+    const currentUid = actor?.uid ?? null;
+    const uidChanged = lastUidRef.current !== currentUid;
+    lastUidRef.current = currentUid;
+
     setLoadingPlaces(true);
     setSyncError(null);
 
@@ -213,9 +226,11 @@ export default function App() {
       }
     );
 
-    optimisticHiddenOverridesRef.current.clear();
-    userReviewCacheRef.current.clear();
-    setMyReviewedPlaceIds(new Set());
+    if (uidChanged) {
+      optimisticHiddenOverridesRef.current.clear();
+      userReviewCacheRef.current.clear();
+      setMyReviewedPlaceIds(new Set());
+    }
 
     if (!actor) {
       setStatusFilter('all');
@@ -266,7 +281,7 @@ export default function App() {
       unsubPlaces();
       unsubHidden();
     };
-  }, [actor]);
+  }, [authReady, actor]);
 
   useEffect(() => {
     if (!actor) {
@@ -275,7 +290,9 @@ export default function App() {
     }
 
     let cancelled = false;
-    void findUserReviewedPlaceIds(actor.uid, allPlaces, userReviewCacheRef.current).then((ids) => {
+    void findUserReviewedPlaceIds(actor.uid, allPlaces, userReviewCacheRef.current, {
+      fetchMissing: statusFilter === 'mine',
+    }).then((ids) => {
       if (!cancelled) {
         setMyReviewedPlaceIds(ids);
       }
@@ -284,7 +301,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [actor, allPlaces]);
+  }, [actor, allPlaces, statusFilter]);
 
   const hiddenWishlistSet = useMemo(() => new Set(hiddenWishlistIds), [hiddenWishlistIds]);
 
@@ -786,6 +803,7 @@ export default function App() {
           p.authorName,
           CATEGORY_LABELS[p.category],
           p.mapsUrl,
+          p.promoUrl,
         ],
         searchText
       );
@@ -924,7 +942,10 @@ export default function App() {
           <div className="flex items-center gap-2.5 min-w-0">
             <button
               type="button"
-              onClick={() => window.location.reload()}
+              onClick={() => {
+                clearFirestoreReadCaches();
+                window.location.reload();
+              }}
               title="Sayfayı yenile"
               aria-label="Gourmand - Sayfayı yenile"
               className="min-h-[44px] inline-flex items-center gap-2.5 rounded-xl pr-1 text-left hover:opacity-85 active:scale-[0.98] transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600 cursor-pointer"
@@ -1130,14 +1151,14 @@ export default function App() {
                 type="search"
                 value={searchText}
                 onChange={(e) => setSearchText(e.target.value)}
-                placeholder="Mekan, bölge (Buca, Kemeraltı), ürün ara..."
+                placeholder="Canın ne çekiyor?, Nerdesin?, Hangi Mekan?"
                 className="w-full min-h-[44px] pl-10 pr-4 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
               />
             </div>
 
             <div className="col-span-1 lg:col-span-2">
               <label htmlFor="product-select-filter" className="sr-only">
-                Ürün çeşidine göre filtrele
+                Lezzetlere göre filtrele
               </label>
               <select
                 id="product-select-filter"
@@ -1145,7 +1166,7 @@ export default function App() {
                 onChange={(e) => setProductFilter(e.target.value)}
                 className="w-full min-h-[44px] px-3 py-2 rounded-xl border border-slate-200 bg-white text-base sm:text-xs font-medium text-slate-700 focus:outline-none focus:ring-2 focus:ring-emerald-600"
               >
-                <option value="all">Tüm Ürün Çeşitleri</option>
+                <option value="all">Lezzetler</option>
                 {productFilterOptions.map((opt) => (
                   <option key={opt.key} value={opt.key}>
                     {opt.label}
@@ -1555,6 +1576,9 @@ export default function App() {
                   <tbody className="divide-y divide-slate-100 text-sm">
                     {sortedAndFilteredPlaces.map(({ place, distanceKm }) => {
                       const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
+                      const hasPromoLink = Boolean(place.promoUrl && /^https?:\/\//i.test(place.promoUrl));
+                      const promoPlatform =
+                        hasPromoLink && place.promoUrl ? getPromoPlatformLabel(place.promoUrl) : null;
                       const canDeletePlace = actor
                         ? place.ownerId === actor.uid
                         : isLocalDeviceRecord(place.ownerId);
@@ -1677,10 +1701,22 @@ export default function App() {
                                 <button
                                   type="button"
                                   onClick={() => setDetailPlace(place)}
-                                  className="text-xs text-slate-400 hover:text-emerald-700 py-0.5"
+                                  className="text-xs text-slate-400 hover:text-emerald-700 py-0.5 block"
                                 >
                                   {place.locationArea ? 'Link ekle' : 'Bölge / link ekle'}
                                 </button>
+                              )}
+                              {hasPromoLink && place.promoUrl && (
+                                <a
+                                  href={place.promoUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-800 hover:underline py-0.5"
+                                >
+                                  <Megaphone className="w-3.5 h-3.5 shrink-0" />
+                                  <span>{promoPlatform ? `Tanıtım (${promoPlatform})` : 'Tanıtım Linki'}</span>
+                                  <ExternalLink className="w-3 h-3 shrink-0" />
+                                </a>
                               )}
                             </div>
                           </td>
@@ -1817,6 +1853,9 @@ export default function App() {
               <div className="rounded-2xl bg-white border border-slate-200 divide-y divide-slate-100 overflow-hidden">
                 {sortedAndFilteredPlaces.map(({ place, distanceKm }) => {
                   const hasLink = Boolean(place.mapsUrl && /^https?:\/\//i.test(place.mapsUrl));
+                  const hasPromoLink = Boolean(place.promoUrl && /^https?:\/\//i.test(place.promoUrl));
+                  const promoPlatform =
+                    hasPromoLink && place.promoUrl ? getPromoPlatformLabel(place.promoUrl) : null;
                   const canDeletePlace = actor
                     ? place.ownerId === actor.uid
                     : isLocalDeviceRecord(place.ownerId);
@@ -1893,26 +1932,40 @@ export default function App() {
                         </p>
                       </button>
 
-                      <div className="flex items-center justify-between gap-2 pt-1">
-                        {hasLink ? (
-                          <a
-                            href={place.mapsUrl}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="min-h-[36px] inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800"
-                          >
-                            <span>Lokasyonu Aç</span>
-                            <ExternalLink className="w-3.5 h-3.5" />
-                          </a>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setDetailPlace(place)}
-                            className="min-h-[36px] text-xs text-slate-400 hover:text-emerald-700"
-                          >
-                            Bölge / link ekle
-                          </button>
-                        )}
+                      <div className="flex items-center justify-between gap-2 pt-1 flex-wrap">
+                        <div className="flex items-center gap-3 flex-wrap">
+                          {hasLink ? (
+                            <a
+                              href={place.mapsUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-h-[36px] inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+                            >
+                              <span>Lokasyonu Aç</span>
+                              <ExternalLink className="w-3.5 h-3.5" />
+                            </a>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setDetailPlace(place)}
+                              className="min-h-[36px] text-xs text-slate-400 hover:text-emerald-700"
+                            >
+                              Bölge / link ekle
+                            </button>
+                          )}
+                          {hasPromoLink && place.promoUrl && (
+                            <a
+                              href={place.promoUrl}
+                              target="_blank"
+                              rel="noopener noreferrer"
+                              className="min-h-[36px] inline-flex items-center gap-1 text-xs font-semibold text-rose-700 hover:text-rose-800"
+                            >
+                              <Megaphone className="w-3.5 h-3.5" />
+                              <span>{promoPlatform ? `Tanıtım (${promoPlatform})` : 'Tanıtım'}</span>
+                              <ExternalLink className="w-3 h-3" />
+                            </a>
+                          )}
+                        </div>
 
                         <div className="flex items-center gap-1.5">
                           <button

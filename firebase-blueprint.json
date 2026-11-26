@@ -69,6 +69,12 @@
           "minLength": 0,
           "maxLength": 600
         },
+        "promoUrl": {
+          "type": "string",
+          "description": "Optional promotional or Instagram link URL for the place.",
+          "minLength": 0,
+          "maxLength": 600
+        },
         "coverImage": {
           "type": "string",
           "description": "Optional compressed JPEG cover image data URL.",

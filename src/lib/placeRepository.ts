@@ -10,11 +10,13 @@ import {
   subscribeLocalPlaceReviews,
   subscribeLocalPlaces,
   updateLocalPlaceMapsUrl,
+  updateLocalPlacePromoUrl,
   updateLocalPlaceTagsAndLocation,
   updateLocalReviewInPlace,
 } from './localDb';
 import {
   addReviewToPlace,
+  clearFirestoreReadCaches,
   createPlaceWithInitialReview,
   deletePlace,
   deleteReviewFromPlace,
@@ -26,6 +28,7 @@ import {
   subscribeUserWishlistPlaces,
   toggleFirestoreWishlistPlaceHidden,
   updatePlaceMapsUrl,
+  updatePlacePromoUrl,
   updatePlaceTagsAndLocation,
   updateReviewInPlace,
   type AddReviewInput,
@@ -33,6 +36,8 @@ import {
   type UpdatePlaceTagsAndLocationInput,
   type UpdateReviewInput,
 } from './placesService';
+
+export { clearFirestoreReadCaches };
 
 export interface CloudActor {
   uid: string;
@@ -282,6 +287,18 @@ export async function updateMapsUrl(
     return updatePlaceMapsUrl(placeId, mapsUrl, actor.uid, isWishlist);
   }
   return updateLocalPlaceMapsUrl(placeId, mapsUrl);
+}
+
+export async function updatePromoUrl(
+  actor: CloudActor | null | undefined,
+  placeId: string,
+  promoUrl: string,
+  isWishlist?: boolean
+): Promise<void> {
+  if (actor) {
+    return updatePlacePromoUrl(placeId, promoUrl, actor.uid, isWishlist);
+  }
+  return updateLocalPlacePromoUrl(placeId, promoUrl);
 }
 
 export async function updatePlaceMetadata(

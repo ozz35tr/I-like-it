@@ -298,3 +298,60 @@ export function getPlaceExternalMapsUrl(place: {
   const q = [place.name, place.locationArea, place.address].filter(Boolean).join(' ');
   return `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(q)}`;
 }
+
+export function getPromoPlatformLabel(urlString: string): string | null {
+  try {
+    const host = new URL(urlString).hostname.toLowerCase();
+    if (/(^|\.)(instagram\.com|instagr\.am)$/i.test(host)) return 'Instagram';
+    if (/(^|\.)(youtube\.com|youtu\.be|m\.youtube\.com)$/i.test(host)) return 'YouTube';
+    if (/(^|\.)(facebook\.com|fb\.watch|fb\.com|m\.facebook\.com)$/i.test(host)) return 'Facebook';
+    if (/(^|\.)(tiktok\.com|vm\.tiktok\.com)$/i.test(host)) return 'TikTok';
+    if (/(^|\.)(x\.com|twitter\.com)$/i.test(host)) return 'X';
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+export function extractPromoLinkInput(rawText: string): {
+  url: string | null;
+  platform: string | null;
+} {
+  const trimmed = rawText.trim();
+  if (!trimmed) {
+    return { url: null, platform: null };
+  }
+
+  const urlMatch = trimmed.match(/https?:\/\/[^\s]+/i);
+  let candidate = urlMatch ? urlMatch[0].replace(/[),.;]+$/, '') : '';
+
+  if (!candidate) {
+    const bareMatch = trimmed.match(
+      /(?:www\.)?(?:instagram\.com|instagr\.am|tiktok\.com|youtube\.com|youtu\.be|facebook\.com|fb\.watch|x\.com|twitter\.com|[a-z0-9-]+\.[a-z]{2,})(?:\/[^\s]*)?/i
+    );
+    if (bareMatch) {
+      candidate = `https://${bareMatch[0].replace(/[),.;]+$/, '')}`;
+    }
+  }
+
+  if (!candidate) {
+    return { url: null, platform: null };
+  }
+
+  try {
+    const parsed = new URL(candidate);
+    if ((parsed.protocol === 'https:' || parsed.protocol === 'http:') && parsed.hostname.includes('.')) {
+      const normalized = parsed.toString().slice(0, 600);
+      return {
+        url: normalized,
+        platform: getPromoPlatformLabel(normalized),
+      };
+    }
+  } catch {
+    return { url: null, platform: null };
+  }
+
+  return { url: null, platform: null };
+}
+
+

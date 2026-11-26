@@ -11,10 +11,10 @@ import {
   type Auth,
 } from 'firebase/auth';
 import {
-  doc,
-  getDocFromServer,
   getFirestore,
   initializeFirestore,
+  persistentLocalCache,
+  persistentMultipleTabManager,
   type Firestore,
 } from 'firebase/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
@@ -26,6 +26,9 @@ try {
   dbInstance = initializeFirestore(
     app,
     {
+      localCache: persistentLocalCache({
+        tabManager: persistentMultipleTabManager(),
+      }),
       experimentalAutoDetectLongPolling: true,
     },
     firebaseConfig.firestoreDatabaseId
@@ -139,14 +142,3 @@ export function formatFriendlyFirestoreError(err: unknown, fallback: string): st
   return raw;
 }
 
-async function testConnection() {
-  try {
-    await getDocFromServer(doc(db, 'test', 'connection'));
-  } catch (error) {
-    if (error instanceof Error && error.message.includes('the client is offline')) {
-      console.error('Please check your Firebase configuration.');
-    }
-  }
-}
-
-void testConnection();

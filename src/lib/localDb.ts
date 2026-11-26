@@ -18,6 +18,7 @@ export interface LegacyLocalPlace {
   lat?: number | null;
   lng?: number | null;
   mapsUrl?: string;
+  promoUrl?: string;
   coverImage?: string;
   latestComment?: string;
   avgRating?: number;
@@ -216,6 +217,7 @@ function normalizePlace(raw: Partial<PlaceItem> & { id: string }): PlaceItem {
     lat: typeof raw.lat === 'number' && Number.isFinite(raw.lat) ? raw.lat : null,
     lng: typeof raw.lng === 'number' && Number.isFinite(raw.lng) ? raw.lng : null,
     mapsUrl: typeof raw.mapsUrl === 'string' ? raw.mapsUrl : '',
+    promoUrl: typeof raw.promoUrl === 'string' ? raw.promoUrl : '',
     coverImage: typeof raw.coverImage === 'string' ? raw.coverImage : '',
     latestComment: typeof raw.latestComment === 'string' ? raw.latestComment : '',
     avgRating: typeof raw.avgRating === 'number' && Number.isFinite(raw.avgRating) ? raw.avgRating : 0,
@@ -368,6 +370,7 @@ export async function createLocalPlaceWithInitialReview(input: {
   lat?: number | null;
   lng?: number | null;
   mapsUrl?: string;
+  promoUrl?: string;
   initialRating?: 1 | 2 | 3 | 4 | 5;
   initialPriceRating?: 1 | 2 | 3 | 4 | 5;
   initialComment?: string;
@@ -383,6 +386,7 @@ export async function createLocalPlaceWithInitialReview(input: {
   const cleanLat = typeof input.lat === 'number' && Number.isFinite(input.lat) ? input.lat : null;
   const cleanLng = typeof input.lng === 'number' && Number.isFinite(input.lng) ? input.lng : null;
   const cleanMapsUrl = (input.mapsUrl || '').trim().slice(0, STORAGE_LIMITS.MAPS_URL_MAX);
+  const cleanPromoUrl = (input.promoUrl || '').trim().slice(0, STORAGE_LIMITS.PROMO_URL_MAX);
   const cleanComment = (input.initialComment || '').trim().slice(0, STORAGE_LIMITS.COMMENT_MAX);
   const cleanPhotos = input.photos
     .filter((p) => typeof p === 'string' && p.length <= 160000)
@@ -402,6 +406,7 @@ export async function createLocalPlaceWithInitialReview(input: {
       lat: cleanLat,
       lng: cleanLng,
       mapsUrl: cleanMapsUrl,
+      promoUrl: cleanPromoUrl,
       coverImage: cleanPhotos[0] || '',
       latestComment: cleanComment,
       avgRating: 0,
@@ -447,6 +452,7 @@ export async function createLocalPlaceWithInitialReview(input: {
     lat: cleanLat,
     lng: cleanLng,
     mapsUrl: cleanMapsUrl,
+    promoUrl: cleanPromoUrl,
     coverImage: cleanPhotos[0] || '',
     latestComment: finalComment,
     avgRating: rating,
@@ -521,6 +527,44 @@ export async function updateLocalPlaceMapsUrl(placeId: string, mapsUrl: string):
     const idx = data.places.findIndex((p) => p.id === placeId);
     if (idx === -1) throw new Error('Mekan bulunamadı.');
     data.places[idx] = { ...normalizePlace(data.places[idx]), mapsUrl: cleanMapsUrl, updatedAt: now };
+    writeFallbackStore(data);
+  }
+
+  notifyLocalChange();
+}
+
+export async function updateLocalPlacePromoUrl(placeId: string, promoUrl: string): Promise<void> {
+  const cleanPromoUrl = promoUrl.trim().slice(0, STORAGE_LIMITS.PROMO_URL_MAX);
+  const now = Date.now();
+
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const tx = db.transaction(STORE_PLACES, 'readwrite');
+      const store = tx.objectStore(STORE_PLACES);
+      const getReq = store.get(placeId);
+      getReq.onsuccess = () => {
+        const existing = getReq.result as (Partial<PlaceItem> & { id: string }) | undefined;
+        if (!existing) {
+          reject(new Error('Mekan bulunamadı.'));
+          return;
+        }
+        const updated = normalizePlace(existing);
+        updated.promoUrl = cleanPromoUrl;
+        updated.updatedAt = now;
+        store.put(updated);
+      };
+      getReq.onerror = () => reject(getReq.error || new Error('Mekan güncellenemedi.'));
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error || new Error('Yerel kayıt tamamlanamadı.'));
+      tx.onabort = () => reject(tx.error || new Error('Yerel işlem iptal edildi.'));
+    });
+  } catch (err) {
+    if (err instanceof Error && err.message === 'Mekan bulunamadı.') throw err;
+    const data = readFallbackStore();
+    const idx = data.places.findIndex((p) => p.id === placeId);
+    if (idx === -1) throw new Error('Mekan bulunamadı.');
+    data.places[idx] = { ...normalizePlace(data.places[idx]), promoUrl: cleanPromoUrl, updatedAt: now };
     writeFallbackStore(data);
   }
 
@@ -1032,6 +1076,7 @@ export async function importBackupToLocal(jsonText: string): Promise<number> {
       lat: typeof p.lat === 'number' ? p.lat : null,
       lng: typeof p.lng === 'number' ? p.lng : null,
       mapsUrl: typeof p.mapsUrl === 'string' ? p.mapsUrl : '',
+      promoUrl: typeof p.promoUrl === 'string' ? p.promoUrl : '',
       initialRating: rating,
       initialPriceRating: isWishlist ? undefined : derivedPriceRating,
       initialComment: isWishlist ? comment : comment.length >= 2 ? comment : 'Ziyaret notu',

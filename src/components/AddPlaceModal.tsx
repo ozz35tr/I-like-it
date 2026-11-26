@@ -9,13 +9,18 @@ import {
   Link2,
   Loader2,
   MapPin,
+  Megaphone,
   Plus,
   Star,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
 import { formatFriendlyFirestoreError } from '../lib/firebase';
-import { extractSharedMapsInput, resolveGoogleMapsLink } from '../lib/mapsLink';
+import {
+  extractPromoLinkInput,
+  extractSharedMapsInput,
+  resolveGoogleMapsLink,
+} from '../lib/mapsLink';
 import { createPlace, type CloudActor } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
@@ -58,6 +63,10 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   const [linkStatus, setLinkStatus] = useState<'idle' | 'valid' | 'invalid'>('idle');
   const [pasteHint, setPasteHint] = useState<string | null>(null);
   const mapsInputRef = useRef<HTMLInputElement | null>(null);
+
+  const [promoInput, setPromoInput] = useState('');
+  const [promoPasteHint, setPromoPasteHint] = useState<string | null>(null);
+  const promoInputRef = useRef<HTMLInputElement | null>(null);
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<PlaceCategory>('restaurant');
@@ -157,6 +166,39 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     mapsInputRef.current?.select();
   };
 
+  const trimmedPromoInput = promoInput.trim();
+  const parsedPromo = trimmedPromoInput
+    ? extractPromoLinkInput(trimmedPromoInput)
+    : { url: null, platform: null };
+  const promoLinkStatus: 'idle' | 'valid' | 'invalid' = !trimmedPromoInput
+    ? 'idle'
+    : parsedPromo.url
+      ? 'valid'
+      : 'invalid';
+
+  const handlePastePromoFromClipboard = async () => {
+    setError(null);
+    setPromoPasteHint(null);
+
+    if (navigator.clipboard?.readText) {
+      try {
+        const clipText = await navigator.clipboard.readText();
+        if (clipText.trim()) {
+          setPromoInput(clipText.trim());
+          return;
+        }
+        setPromoPasteHint('Panoda kopyalanmış metin yok. Bağlantıyı doğrudan kutuya yapıştırabilirsiniz.');
+      } catch {
+        setPromoPasteHint('Doğrudan kutunun içine uzun basıp Yapıştır (veya Ctrl+V) yapabilirsiniz.');
+      }
+    } else {
+      setPromoPasteHint('Doğrudan kutunun içine uzun basıp Yapıştır (veya Ctrl+V) yapabilirsiniz.');
+    }
+
+    promoInputRef.current?.focus();
+    promoInputRef.current?.select();
+  };
+
   const toggleCuisineTag = (label: string) => {
     const clean = label.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
     if (!clean) return;
@@ -226,6 +268,12 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
       );
       return;
     }
+    if (trimmedPromoInput && !parsedPromo.url) {
+      setError(
+        'Girilen tanıtım bağlantısı geçerli bir web bağlantısı değil (Instagram, YouTube, Facebook vb.). İsterseniz alanı boş bırakarak da kaydedebilirsiniz.'
+      );
+      return;
+    }
     if (effectiveVisitStatus === 'visited' && trimmedComment.length < STORAGE_LIMITS.COMMENT_MIN) {
       setError('Lütfen mekan hakkında kısa bir yorum yazın.');
       return;
@@ -245,6 +293,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
         lat: coords.lat,
         lng: coords.lng,
         mapsUrl: finalUrl,
+        promoUrl: parsedPromo.url || '',
         initialRating: effectiveVisitStatus === 'visited' ? rating : undefined,
         initialPriceRating: effectiveVisitStatus === 'visited' ? priceRating : undefined,
         initialComment: trimmedComment,
@@ -414,6 +463,89 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             {linkStatus === 'invalid' && (
               <p className="text-[11px] font-medium text-rose-600">
                 Geçerli bir Google Haritalar linki gibi görünmüyor; isterseniz alanı temizleyip linksiz kaydedebilirsiniz.
+              </p>
+            )}
+          </div>
+
+          {/* Tanıtım Linki */}
+          <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2">
+            <div className="flex items-center justify-between gap-2">
+              <label
+                htmlFor="promo-share-link"
+                className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-700"
+              >
+                <Megaphone className="w-3.5 h-3.5 text-rose-600 shrink-0" />
+                <span>
+                  Tanıtım Linki{' '}
+                  <span className="font-normal text-slate-500">(İsteğe Bağlı)</span>
+                </span>
+              </label>
+              {parsedPromo.url && (
+                <a
+                  href={parsedPromo.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[30px] shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-slate-200 text-[11px] font-semibold text-rose-700 hover:bg-rose-50"
+                >
+                  <span>{parsedPromo.platform ? `${parsedPromo.platform} Önizle` : 'Önizle'}</span>
+                  <ExternalLink className="w-3 h-3" />
+                </a>
+              )}
+            </div>
+
+            <p className="text-[11px] text-slate-500 leading-relaxed">
+              Instagram, YouTube, Facebook veya web sitesi gibi herhangi bir tanıtım bağlantısını ekleyin; daha sonra tek tıkla tanıtıma ulaşabilirsiniz.
+            </p>
+
+            <div className="flex gap-2">
+              <div className="relative flex-1">
+                <Megaphone className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <input
+                  ref={promoInputRef}
+                  id="promo-share-link"
+                  type="text"
+                  inputMode="url"
+                  autoComplete="off"
+                  maxLength={STORAGE_LIMITS.PROMO_URL_MAX}
+                  value={promoInput}
+                  onChange={(e) => {
+                    setPromoInput(e.target.value);
+                    setPromoPasteHint(null);
+                  }}
+                  onPaste={(e) => {
+                    const pasted = e.clipboardData?.getData('text');
+                    if (pasted) {
+                      e.preventDefault();
+                      setPromoInput(pasted.trim());
+                      setPromoPasteHint(null);
+                    }
+                  }}
+                  placeholder="https://... (Instagram, YouTube, Facebook veya web linki)"
+                  className="w-full min-h-[44px] pl-9 pr-8 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+                />
+                {promoLinkStatus === 'valid' && (
+                  <CheckCircle2 className="w-4 h-4 text-emerald-700 absolute right-3 top-1/2 -translate-y-1/2" />
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => void handlePastePromoFromClipboard()}
+                className="min-h-[44px] shrink-0 inline-flex items-center gap-1.5 px-3 py-2 rounded-xl bg-white border border-slate-300 text-xs font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                <ClipboardPaste className="w-4 h-4 text-emerald-700" />
+                <span>Yapıştır</span>
+              </button>
+            </div>
+
+            {promoPasteHint && (
+              <p className="text-[11px] text-slate-600 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                {promoPasteHint}
+              </p>
+            )}
+
+            {promoLinkStatus === 'invalid' && (
+              <p className="text-[11px] font-medium text-rose-600">
+                Geçerli bir tanıtım linki girin (Instagram, YouTube, Facebook veya web); isterseniz boş bırakabilirsiniz.
               </p>
             )}
           </div>
