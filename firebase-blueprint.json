@@ -237,7 +237,7 @@
   "firestore": {
     "/places/{placeId}": {
       "schema": { "$ref": "#/entities/Place" },
-      "description": "Shared community list of visited places readable by all visitors (including unauthenticated first-time users) and writable by verified signed-in users."
+      "description": "Shared community list of places (visited or wishlist) readable by all visitors (including unauthenticated first-time users) and writable by verified signed-in users."
     },
     "/places/{placeId}/reviews/{reviewId}": {
       "schema": { "$ref": "#/entities/Review" },

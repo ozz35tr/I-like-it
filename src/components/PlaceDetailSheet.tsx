@@ -490,16 +490,18 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                   <div className="flex items-center gap-2 text-xs font-semibold text-amber-900">
                     <Bookmark className="w-4 h-4 text-amber-600 shrink-0" />
                     <span>
-                      {isHiddenInWishlist
+                      {isInUserWishlist && isHiddenInWishlist
                         ? 'Gitmek İstiyorum Listesinde · Sizin için gizli'
-                        : 'Gitmek İstiyorum Listesinde · Henüz puanlanmadı'}
+                        : isInUserWishlist
+                          ? 'Kişisel Gitmek İstiyorum Listenizde · Henüz puanlanmadı'
+                          : 'Topluluk Keşif Listesinde · Henüz puanlanmadı'}
                     </span>
                   </div>
-                  {onToggleHiddenWishlist && (
+                  {isInUserWishlist && onToggleHiddenWishlist && (
                     <button
                       type="button"
                       onClick={() => void onToggleHiddenWishlist(place.id, !isHiddenInWishlist)}
-                      className={`min-h-[38px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold shrink-0 transition-colors ${
+                      className={`min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border text-xs font-semibold shrink-0 transition-colors ${
                         isHiddenInWishlist
                           ? 'bg-emerald-50 border-emerald-200 text-emerald-700 hover:bg-emerald-100'
                           : 'bg-white border-amber-200 text-slate-700 hover:bg-slate-50'
@@ -522,14 +524,56 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                 {place.latestComment && (
                   <p className="text-xs text-amber-950 leading-relaxed">{place.latestComment}</p>
                 )}
-                <button
-                  type="button"
-                  onClick={() => setShowReviewForm(true)}
-                  className="min-h-[40px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 transition-colors"
-                >
-                  <CheckCircle2 className="w-4 h-4" />
-                  <span>Gidildi Olarak İşaretle &amp; Puanla</span>
-                </button>
+                <div className="flex flex-wrap items-center gap-2 pt-1">
+                  {actor && onToggleUserWishlist ? (
+                    <button
+                      type="button"
+                      disabled={togglingUserWishlist}
+                      onClick={async () => {
+                        setTogglingUserWishlist(true);
+                        try {
+                          await onToggleUserWishlist(place);
+                        } finally {
+                          setTogglingUserWishlist(false);
+                        }
+                      }}
+                      className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold border transition-colors disabled:opacity-50 ${
+                        isInUserWishlist
+                          ? 'bg-amber-100 border-amber-300 text-amber-950 hover:bg-amber-200/70'
+                          : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-100/70'
+                      }`}
+                    >
+                      {togglingUserWishlist ? (
+                        <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                      ) : isInUserWishlist ? (
+                        <BookmarkCheck className="w-3.5 h-3.5 text-amber-700" />
+                      ) : (
+                        <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                      )}
+                      <span>{isInUserWishlist ? 'Listemde (Çıkar)' : 'Kişisel Listeme Ekle'}</span>
+                    </button>
+                  ) : (
+                    onRequestSignIn && (
+                      <button
+                        type="button"
+                        onClick={onRequestSignIn}
+                        className="min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-amber-300 text-xs font-semibold text-amber-900 hover:bg-amber-100/70"
+                      >
+                        <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                        <span>Gitmek İstiyorum için Giriş Yap</span>
+                      </button>
+                    )
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => setShowReviewForm(true)}
+                    className="min-h-[38px] inline-flex items-center gap-1.5 px-3.5 py-1.5 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 transition-colors"
+                  >
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Gidildi Olarak İşaretle &amp; Puanla</span>
+                  </button>
+                </div>
               </div>
             )}
 

@@ -62,6 +62,8 @@ import {
   removePlace,
   subscribeHiddenWishlistIds,
   subscribeUserOrLocalPlaces,
+  subscribeUserWishlistPlaceIds,
+  syncUserWishlistToShared,
   toggleExistingPlaceWishlist,
   toggleWishlistPlaceHidden,
   type CloudActor,
@@ -71,7 +73,6 @@ import {
   findUserReviewedPlaceIds,
   importBackupToFirestore,
   migrateLegacyPersonalCloudToShared,
-  migrateLegacySharedWishlistToPrivate,
   resolveSafeAuthorName,
   type UserReviewLookupCacheEntry,
 } from './lib/placesService';
@@ -84,7 +85,7 @@ import {
 } from './types/place';
 
 type ListStatusFilter = 'visited' | 'wishlist' | 'hidden';
-type VisitedOwnerFilter = 'all' | 'mine' | 'others';
+type VisitedOwnerFilter = 'all' | 'visited_only' | 'wishlist_only' | 'mine' | 'others';
 
 function renderStars(avgRating: number) {
   const rounded = Math.round(avgRating);
@@ -154,6 +155,7 @@ export default function App() {
 
   const [hiddenWishlistIds, setHiddenWishlistIds] = useState<string[]>([]);
   const optimisticHiddenOverridesRef = useRef<Map<string, boolean>>(new Map());
+  const [myWishlistPlaceIds, setMyWishlistPlaceIds] = useState<Set<string>>(() => new Set());
   const [myReviewedPlaceIds, setMyReviewedPlaceIds] = useState<Set<string>>(() => new Set());
   const userReviewCacheRef = useRef<Map<string, UserReviewLookupCacheEntry>>(new Map());
 
@@ -216,6 +218,7 @@ export default function App() {
       optimisticHiddenOverridesRef.current.clear();
       userReviewCacheRef.current.clear();
       setMyReviewedPlaceIds(new Set());
+      setMyWishlistPlaceIds(new Set());
       if (prevUid !== null) {
         clearFirestoreReadCaches();
       }
@@ -242,6 +245,7 @@ export default function App() {
       setStatusFilter('visited');
       setVisitedOwnerFilter('all');
       setHiddenWishlistIds([]);
+      setMyWishlistPlaceIds(new Set());
     }
 
     const unsubHidden = subscribeHiddenWishlistIds(
@@ -261,8 +265,12 @@ export default function App() {
       }
     );
 
+    const unsubWishlistIds = subscribeUserWishlistPlaceIds(actor, (ids) => {
+      setMyWishlistPlaceIds(ids);
+    });
+
     if (actor) {
-      void migrateLegacySharedWishlistToPrivate(actor.uid);
+      void syncUserWishlistToShared(actor.uid, actor.authorName);
 
       void listLocalIndexedDbPlaces()
         .then((localItems) => {
@@ -287,6 +295,7 @@ export default function App() {
     return () => {
       unsubPlaces();
       unsubHidden();
+      unsubWishlistIds();
     };
   }, [authReady, actor]);
 
@@ -313,16 +322,7 @@ export default function App() {
   }, [actor, allPlaces, statusFilter, visitedOwnerFilter]);
 
   const hiddenWishlistSet = useMemo(() => new Set(hiddenWishlistIds), [hiddenWishlistIds]);
-
-  const wishlistPlaceIdSet = useMemo(() => {
-    const set = new Set<string>();
-    for (const p of allPlaces) {
-      if (p.visitStatus === 'wishlist' && p.reviewCount === 0) {
-        set.add(p.id);
-      }
-    }
-    return set;
-  }, [allPlaces]);
+  const wishlistPlaceIdSet = myWishlistPlaceIds;
 
   const liveDetailPlace = useMemo(() => {
     if (!detailPlace) return null;
@@ -623,9 +623,17 @@ export default function App() {
     );
   };
 
+  const totalCatalogCount = allPlaces.length;
+
   const visitedCount = useMemo(
     () =>
       allPlaces.filter((p) => !(p.visitStatus === 'wishlist' && p.reviewCount === 0)).length,
+    [allPlaces]
+  );
+
+  const wishlistCatalogCount = useMemo(
+    () =>
+      allPlaces.filter((p) => p.visitStatus === 'wishlist' && p.reviewCount === 0).length,
     [allPlaces]
   );
 
@@ -647,45 +655,60 @@ export default function App() {
     }).length;
   }, [allPlaces, actor, myReviewedPlaceIds, visitedCount]);
 
-  const hiddenWishlistCount = useMemo(
-    () =>
-      allPlaces.filter(
-        (p) => p.visitStatus === 'wishlist' && p.reviewCount === 0 && hiddenWishlistSet.has(p.id)
-      ).length,
-    [allPlaces, hiddenWishlistSet]
-  );
+  const personalWishlistCount = useMemo(() => {
+    if (!actor) return 0;
+    return allPlaces.filter(
+      (p) => myWishlistPlaceIds.has(p.id) && !hiddenWishlistSet.has(p.id)
+    ).length;
+  }, [allPlaces, actor, myWishlistPlaceIds, hiddenWishlistSet]);
 
-  const wishlistCount = useMemo(() => {
-    return allPlaces.filter((p) => {
-      const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
-      if (!isWish) return false;
-      return !hiddenWishlistSet.has(p.id);
-    }).length;
-  }, [allPlaces, hiddenWishlistSet]);
+  const hiddenWishlistCount = useMemo(() => {
+    if (!actor) return 0;
+    return allPlaces.filter(
+      (p) => myWishlistPlaceIds.has(p.id) && hiddenWishlistSet.has(p.id)
+    ).length;
+  }, [allPlaces, actor, myWishlistPlaceIds, hiddenWishlistSet]);
+
+  const wishlistCount = personalWishlistCount;
 
   const statusScopedPlaces = useMemo(() => {
     return allPlaces.filter((p) => {
-      const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
-      const isHidden = isWish && hiddenWishlistSet.has(p.id);
+      const isCatalogWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
 
       switch (statusFilter) {
         case 'visited': {
-          if (isWish) return false;
-          if (!actor || visitedOwnerFilter === 'all') return true;
+          if (visitedOwnerFilter === 'all') return true;
+          if (visitedOwnerFilter === 'visited_only') return !isCatalogWish;
+          if (visitedOwnerFilter === 'wishlist_only') return isCatalogWish;
           if (visitedOwnerFilter === 'mine') {
-            return p.ownerId === actor.uid || myReviewedPlaceIds.has(p.id);
+            if (!actor) return false;
+            return !isCatalogWish && (p.ownerId === actor.uid || myReviewedPlaceIds.has(p.id));
           }
-          return p.ownerId !== actor.uid && !myReviewedPlaceIds.has(p.id);
+          if (visitedOwnerFilter === 'others') {
+            if (!actor) return true;
+            return !isCatalogWish && p.ownerId !== actor.uid && !myReviewedPlaceIds.has(p.id);
+          }
+          return true;
         }
         case 'wishlist':
-          return isWish && !isHidden;
+          if (!actor) return false;
+          return myWishlistPlaceIds.has(p.id) && !hiddenWishlistSet.has(p.id);
         case 'hidden':
-          return isHidden;
+          if (!actor) return false;
+          return myWishlistPlaceIds.has(p.id) && hiddenWishlistSet.has(p.id);
         default:
-          return !isWish;
+          return true;
       }
     });
-  }, [allPlaces, statusFilter, visitedOwnerFilter, hiddenWishlistSet, actor, myReviewedPlaceIds]);
+  }, [
+    allPlaces,
+    statusFilter,
+    visitedOwnerFilter,
+    hiddenWishlistSet,
+    actor,
+    myReviewedPlaceIds,
+    myWishlistPlaceIds,
+  ]);
 
   const knownRegions = useMemo(() => {
     const map = new Map<string, string>();
@@ -1167,8 +1190,8 @@ export default function App() {
               >
                 {(
                   [
-                    ['visited', 'Lezzet Noktaları', visitedCount],
-                    ['wishlist', 'Gitmek İstiyorum', wishlistCount],
+                    ['visited', 'Tüm Mekanlar', totalCatalogCount],
+                    ['wishlist', 'Gitmek İstiyorum', personalWishlistCount],
                   ] as const
                 ).map(([key, label, count]) => {
                   const active = statusFilter === key;
@@ -1234,7 +1257,7 @@ export default function App() {
             ) : (
               <div className="inline-flex flex-wrap items-center gap-2">
                 <span className="inline-flex items-center px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-semibold text-slate-900 tabular-nums">
-                  Lezzet Noktaları ({visitedCount})
+                  Tüm Mekanlar ({totalCatalogCount})
                 </span>
                 <span className="text-xs text-slate-500">
                   Kendi değerlendirmeleriniz ve Gitmek İstiyorum listeniz için giriş yapabilirsiniz
@@ -1255,17 +1278,23 @@ export default function App() {
             </p>
           </div>
 
-          {actor && statusFilter === 'visited' && (
+          {statusFilter === 'visited' && (
             <div
               role="group"
-              aria-label="Lezzet noktaları alt filtresi"
+              aria-label="Mekan listesi alt filtresi"
               className="inline-flex flex-wrap items-center gap-1.5"
             >
               {(
                 [
-                  ['all', 'Hepsi', visitedCount],
-                  ['mine', 'Gittiklerim', mineVisitedCount],
-                  ['others', 'Keşfet', othersVisitedCount],
+                  ['all', 'Hepsi', totalCatalogCount],
+                  ['visited_only', 'Lezzet Noktaları', visitedCount],
+                  ['wishlist_only', 'Gitmek İstenenler', wishlistCatalogCount],
+                  ...(actor
+                    ? ([
+                        ['mine', 'Gittiklerim', mineVisitedCount],
+                        ['others', 'Keşfet', othersVisitedCount],
+                      ] as const)
+                    : []),
                 ] as const
               ).map(([key, label, count]) => {
                 const active = visitedOwnerFilter === key;
@@ -1283,8 +1312,10 @@ export default function App() {
                   >
                     <span>{label}</span>
                     <span
-                      className={`text-[11px] font-semibold tabular-nums ${
-                        active ? 'text-emerald-700' : 'text-slate-400'
+                      className={`inline-flex items-center justify-center min-w-[18px] px-1 py-0.2 rounded text-[10px] tabular-nums ${
+                        active
+                          ? 'bg-emerald-100/90 text-emerald-950 font-semibold'
+                          : 'bg-slate-100 text-slate-600'
                       }`}
                     >
                       {count}
@@ -1753,12 +1784,13 @@ export default function App() {
                         ? place.ownerId === actor.uid
                         : isLocalDeviceRecord(place.ownerId);
                       const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
-                      const isHidden = hiddenWishlistSet.has(place.id);
-                      const canToggleAsWishlist =
-                        !isWishlist &&
-                        (!actor ||
-                          (place.ownerId !== actor.uid && !myReviewedPlaceIds.has(place.id)));
-                      const isMarkedWishlist = actor ? wishlistPlaceIdSet.has(place.id) : false;
+                      const isMyReviewed = actor
+                        ? (place.ownerId === actor.uid && place.visitStatus === 'visited') ||
+                          myReviewedPlaceIds.has(place.id)
+                        : false;
+                      const canToggleAsWishlist = !isMyReviewed;
+                      const isMarkedWishlist = actor ? myWishlistPlaceIds.has(place.id) : false;
+                      const isHidden = actor ? isMarkedWishlist && hiddenWishlistSet.has(place.id) : false;
                       const isTogglingWishlist = togglingWishlistId === place.id;
                       return (
                         <tr
@@ -1943,7 +1975,7 @@ export default function App() {
                                   </button>
                                 )}
                               </div>
-                              {isWishlist && (
+                              {actor && isMarkedWishlist && (
                                 <button
                                   type="button"
                                   onClick={() => void handleToggleHiddenWishlist(place.id, !isHidden)}
@@ -2076,12 +2108,13 @@ export default function App() {
                     ? place.ownerId === actor.uid
                     : isLocalDeviceRecord(place.ownerId);
                   const isWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
-                  const isHidden = hiddenWishlistSet.has(place.id);
-                  const canToggleAsWishlist =
-                    !isWishlist &&
-                    (!actor ||
-                      (place.ownerId !== actor.uid && !myReviewedPlaceIds.has(place.id)));
-                  const isMarkedWishlist = actor ? wishlistPlaceIdSet.has(place.id) : false;
+                  const isMyReviewed = actor
+                    ? (place.ownerId === actor.uid && place.visitStatus === 'visited') ||
+                      myReviewedPlaceIds.has(place.id)
+                    : false;
+                  const canToggleAsWishlist = !isMyReviewed;
+                  const isMarkedWishlist = actor ? myWishlistPlaceIds.has(place.id) : false;
+                  const isHidden = actor ? isMarkedWishlist && hiddenWishlistSet.has(place.id) : false;
                   const isTogglingWishlist = togglingWishlistId === place.id;
                   return (
                     <div
@@ -2231,7 +2264,7 @@ export default function App() {
                           >
                             {isWishlist ? 'Detay / Puanla' : `Yorumlar (${place.reviewCount})`}
                           </button>
-                          {isWishlist && (
+                          {actor && isMarkedWishlist && (
                             <button
                               type="button"
                               onClick={() => void handleToggleHiddenWishlist(place.id, !isHidden)}
@@ -2314,8 +2347,10 @@ export default function App() {
         <PlaceDetailSheet
           actor={actor}
           place={liveDetailPlace}
-          isHiddenInWishlist={hiddenWishlistSet.has(liveDetailPlace.id)}
-          isInUserWishlist={wishlistPlaceIdSet.has(liveDetailPlace.id)}
+          isHiddenInWishlist={
+            actor ? myWishlistPlaceIds.has(liveDetailPlace.id) && hiddenWishlistSet.has(liveDetailPlace.id) : false
+          }
+          isInUserWishlist={actor ? myWishlistPlaceIds.has(liveDetailPlace.id) : false}
           onToggleHiddenWishlist={actor ? handleToggleHiddenWishlist : undefined}
           onToggleUserWishlist={actor ? handleTogglePlaceWishlist : undefined}
           onRequestSignIn={() => void handleSignIn()}

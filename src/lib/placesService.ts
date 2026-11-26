@@ -495,14 +495,9 @@ async function fetchSharedPlacesOnce(force = false): Promise<PlaceItem[]> {
       for (const d of snap.docs) {
         const data = d.data();
         const mapped = mapPlaceDoc(d.id, data);
-        if (mapped.visitStatus === 'wishlist' && mapped.reviewCount === 0) {
-          legacyDocs.push(d);
-          continue;
-        }
         items.push(mapped);
       }
 
-      detectedLegacySharedWishlistDocs = legacyDocs;
       items.sort((a, b) => b.updatedAt - a.updatedAt);
 
       persistSharedPlaces(items, Date.now());
@@ -727,52 +722,46 @@ export function subscribeUserWishlistPlaces(
   };
 }
 
-export async function migrateLegacySharedWishlistToPrivate(userId: string): Promise<number> {
-  const flagKey = `${FLAG_KEY_LEGACY_WISHLIST_DONE_PREFIX}${userId}`;
+const FLAG_KEY_WISHLIST_SYNC_SHARED_PREFIX = 'gourmand_flag_wish_shared_sync_v1_';
+
+export async function syncUserWishlistToShared(userId: string, authorName: string): Promise<number> {
+  const flagKey = `${FLAG_KEY_WISHLIST_SYNC_SHARED_PREFIX}${userId}`;
   if (readStorageFlag(flagKey)) {
     return 0;
   }
 
   try {
-    // Reuse the already-fetched shared places snapshot instead of triggering another full-collection read
-    if (detectedLegacySharedWishlistDocs === null) {
-      await fetchSharedPlacesOnce();
-    }
-
-    const rawLegacyDocs = detectedLegacySharedWishlistDocs || [];
-    const legacyOwnWishlistDocs = rawLegacyDocs.filter((d) => {
-      const data = d.data();
-      return (
-        data.ownerId === userId &&
-        data.visitStatus === 'wishlist' &&
-        (typeof data.reviewCount !== 'number' || data.reviewCount === 0)
-      );
-    });
-
-    if (legacyOwnWishlistDocs.length === 0) {
+    const wishSnap = await getDocs(
+      query(collection(db, `users/${userId}/wishlist`), where('ownerId', '==', userId), limit(100))
+    );
+    if (wishSnap.empty) {
       writeStorageFlag(flagKey, true);
       return 0;
     }
 
-    let migrated = 0;
-    const migratedItems: PlaceItem[] = [];
+    const shared = sharedPlacesState.items || (await fetchSharedPlacesOnce());
+    const sharedIdSet = new Set(shared.map((p) => p.id));
+    const missingDocs = wishSnap.docs.filter((d) => !sharedIdSet.has(d.id));
 
-    for (let i = 0; i < legacyOwnWishlistDocs.length; i += 200) {
-      const chunk = legacyOwnWishlistDocs.slice(i, i + 200);
+    if (missingDocs.length === 0) {
+      writeStorageFlag(flagKey, true);
+      return 0;
+    }
+
+    let synced = 0;
+    for (let i = 0; i < missingDocs.length; i += 200) {
+      const chunk = missingDocs.slice(i, i + 200);
       const batch = writeBatch(db);
 
-      for (const legacyDoc of chunk) {
-        const data = legacyDoc.data();
-        const { cuisineTypes, cuisineType } = normalizeCuisineTags(
-          data.cuisineTypes,
-          data.cuisineType
-        );
+      for (const d of chunk) {
+        const data = d.data();
+        const { cuisineTypes, cuisineType } = normalizeCuisineTags(data.cuisineTypes, data.cuisineType);
         const cleanName =
           typeof data.name === 'string' && data.name.trim().length >= STORAGE_LIMITS.NAME_MIN
             ? data.name.trim().slice(0, STORAGE_LIMITS.NAME_MAX)
             : 'Mekan';
         const cleanAuthor = resolveSafeAuthorName(
-          typeof data.authorName === 'string' ? data.authorName : undefined
+          typeof data.authorName === 'string' ? data.authorName : authorName
         );
         const cleanCategory = normalizeCategory(data.category);
         const cleanArea =
@@ -796,10 +785,10 @@ export async function migrateLegacySharedWishlistToPrivate(userId: string): Prom
             ? data.latestComment.slice(0, STORAGE_LIMITS.COMMENT_MAX)
             : '';
 
-        batch.set(doc(db, `users/${userId}/wishlist/${legacyDoc.id}`), {
+        batch.set(doc(db, `places/${d.id}`), {
           ownerId: userId,
           authorName: cleanAuthor,
-          visibility: 'private',
+          visibility: 'shared',
           name: cleanName,
           category: cleanCategory,
           visitStatus: 'wishlist',
@@ -821,59 +810,26 @@ export async function migrateLegacySharedWishlistToPrivate(userId: string): Prom
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
-        batch.delete(legacyDoc.ref);
-        migrated += 1;
-
-        const now = Date.now();
-        migratedItems.push({
-          id: legacyDoc.id,
-          ownerId: userId,
-          authorName: cleanAuthor,
-          name: cleanName,
-          category: cleanCategory,
-          visitStatus: 'wishlist',
-          cuisineType,
-          cuisineTypes,
-          locationArea: cleanArea,
-          lat: cleanLat,
-          lng: cleanLng,
-          mapsUrl: cleanMapsUrl,
-          promoUrl: cleanPromoUrl,
-          coverImage: cleanCover,
-          latestComment: cleanComment,
-          avgRating: 0,
-          reviewCount: 0,
-          ratingSum: 0,
-          avgPriceRating: 0,
-          priceRatingCount: 0,
-          priceRatingSum: 0,
-          createdAt: now,
-          updatedAt: now,
-        });
+        synced += 1;
       }
 
       await batch.commit();
     }
 
-    if (migratedItems.length > 0) {
-      const currentWish = wishlistStates.get(userId)?.items || hydrateWishlistFromStorage(userId) || [];
-      const existingIds = new Set(currentWish.map((p) => p.id));
-      const merged = [
-        ...migratedItems.filter((item) => !existingIds.has(item.id)),
-        ...currentWish,
-      ].sort((a, b) => b.updatedAt - a.updatedAt);
-      persistWishlistPlaces(userId, merged, Date.now());
-      notifyWishlist(userId);
+    if (synced > 0) {
+      await fetchSharedPlacesOnce(true);
+      notifySharedPlaces();
     }
 
-    detectedLegacySharedWishlistDocs = rawLegacyDocs.filter(
-      (d) => !migratedItems.some((m) => m.id === d.id)
-    );
     writeStorageFlag(flagKey, true);
-    return migrated;
+    return synced;
   } catch {
     return 0;
   }
+}
+
+export async function migrateLegacySharedWishlistToPrivate(_userId: string): Promise<number> {
+  return 0;
 }
 
 async function fetchPlaceReviewsOnce(
@@ -1049,7 +1005,37 @@ export async function createPlaceWithInitialReview(
   if (visitStatus === 'wishlist') {
     const wishlistPath = `users/${userId}/wishlist/${placeId}`;
     try {
-      await setDoc(doc(db, wishlistPath), {
+      const batch = writeBatch(db);
+
+      // 1. Write to public shared collection so all users can see it on the main list
+      batch.set(doc(db, placePath), {
+        ownerId: userId,
+        authorName: cleanAuthor,
+        visibility: 'shared',
+        name: cleanName,
+        category: cleanCategory,
+        visitStatus: 'wishlist',
+        cuisineType,
+        cuisineTypes,
+        locationArea: cleanLocationArea,
+        lat: cleanLat,
+        lng: cleanLng,
+        mapsUrl: cleanMapsUrl,
+        promoUrl: cleanPromoUrl,
+        coverImage,
+        latestComment: cleanComment,
+        avgRating: 0,
+        reviewCount: 0,
+        ratingSum: 0,
+        avgPriceRating: 0,
+        priceRatingCount: 0,
+        priceRatingSum: 0,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+
+      // 2. Also write to user's private wishlist so it appears in their personal wishlist tab
+      batch.set(doc(db, wishlistPath), {
         ownerId: userId,
         authorName: cleanAuthor,
         visibility: 'private',
@@ -1074,6 +1060,8 @@ export async function createPlaceWithInitialReview(
         createdAt: serverTimestamp(),
         updatedAt: serverTimestamp(),
       });
+
+      await batch.commit();
 
       const newPlace: PlaceItem = {
         id: placeId,
@@ -1100,12 +1088,18 @@ export async function createPlaceWithInitialReview(
         createdAt: now,
         updatedAt: now,
       };
+
+      const prevShared = sharedPlacesState.items || hydrateSharedPlacesFromStorage() || [];
+      persistSharedPlaces([newPlace, ...prevShared.filter((p) => p.id !== placeId)], now);
+      notifySharedPlaces();
+
       const prevWish = wishlistStates.get(userId)?.items || hydrateWishlistFromStorage(userId) || [];
-      persistWishlistPlaces(userId, [newPlace, ...prevWish], now);
+      persistWishlistPlaces(userId, [newPlace, ...prevWish.filter((p) => p.id !== placeId)], now);
       notifyWishlist(userId);
+
       return placeId;
     } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, wishlistPath);
+      handleFirestoreError(error, OperationType.CREATE, placePath);
     }
   }
 

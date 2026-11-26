@@ -126,7 +126,7 @@ service cloud.firestore {
     function isValidSharedPlace(data) {
       return isValidPlaceFields(data) &&
         data.visibility == 'shared' &&
-        (!('visitStatus' in data) || data.visitStatus == 'visited');
+        (!('visitStatus' in data) || data.visitStatus in ['visited', 'wishlist']);
     }
 
     function isValidUserWishlistPlace(data, userId) {
@@ -197,7 +197,7 @@ service cloud.firestore {
         data.updatedAt is timestamp;
     }
 
-    // Shared Collaborative Visited Places & Reviews (Readable publicly without sign-in; writes require verified auth)
+    // Shared Collaborative Visited and Wishlist Places & Reviews (Readable publicly without sign-in; writes require verified auth)
     match /places/{placeId} {
       allow get: if isValidId(placeId) &&
         (resource == null || existing().visibility == 'shared');
@@ -231,6 +231,8 @@ service cloud.firestore {
               'locationArea',
               'lat',
               'lng',
+              'latestComment',
+              'coverImage',
               'visitStatus',
               'updatedAt'
             ])
@@ -260,7 +262,7 @@ service cloud.firestore {
               'visitStatus',
               'updatedAt'
             ]) &&
-            (!('visitStatus' in incoming()) || incoming().visitStatus == 'visited')
+            (!('visitStatus' in incoming()) || incoming().visitStatus in ['visited', 'wishlist'])
           )
         );
 
