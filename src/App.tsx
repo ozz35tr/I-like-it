@@ -80,7 +80,8 @@ import {
   type SortField,
 } from './types/place';
 
-type ListStatusFilter = 'all' | 'visited' | 'mine' | 'wishlist' | 'hidden';
+type ListStatusFilter = 'visited' | 'wishlist' | 'hidden';
+type VisitedOwnerFilter = 'all' | 'mine' | 'others';
 
 function renderStars(avgRating: number) {
   const rounded = Math.round(avgRating);
@@ -143,7 +144,8 @@ export default function App() {
   const [loadingPlaces, setLoadingPlaces] = useState(true);
   const [syncError, setSyncError] = useState<string | null>(null);
   const [searchText, setSearchText] = useState('');
-  const [statusFilter, setStatusFilter] = useState<ListStatusFilter>('all');
+  const [statusFilter, setStatusFilter] = useState<ListStatusFilter>('visited');
+  const [visitedOwnerFilter, setVisitedOwnerFilter] = useState<VisitedOwnerFilter>('all');
   const [productFilter, setProductFilter] = useState<string>('all');
   const [regionFilter, setRegionFilter] = useState<string>('all');
 
@@ -233,7 +235,8 @@ export default function App() {
     }
 
     if (!actor) {
-      setStatusFilter('all');
+      setStatusFilter('visited');
+      setVisitedOwnerFilter('all');
       setHiddenWishlistIds([]);
     }
 
@@ -291,7 +294,9 @@ export default function App() {
 
     let cancelled = false;
     void findUserReviewedPlaceIds(actor.uid, allPlaces, userReviewCacheRef.current, {
-      fetchMissing: statusFilter === 'mine',
+      fetchMissing:
+        statusFilter === 'visited' &&
+        (visitedOwnerFilter === 'mine' || visitedOwnerFilter === 'others'),
     }).then((ids) => {
       if (!cancelled) {
         setMyReviewedPlaceIds(ids);
@@ -301,7 +306,7 @@ export default function App() {
     return () => {
       cancelled = true;
     };
-  }, [actor, allPlaces, statusFilter]);
+  }, [actor, allPlaces, statusFilter, visitedOwnerFilter]);
 
   const hiddenWishlistSet = useMemo(() => new Set(hiddenWishlistIds), [hiddenWishlistIds]);
 
@@ -578,6 +583,15 @@ export default function App() {
     }).length;
   }, [allPlaces, actor, myReviewedPlaceIds]);
 
+  const othersVisitedCount = useMemo(() => {
+    if (!actor) return visitedCount;
+    return allPlaces.filter((p) => {
+      const isWish = p.visitStatus === 'wishlist' && p.reviewCount === 0;
+      if (isWish) return false;
+      return p.ownerId !== actor.uid && !myReviewedPlaceIds.has(p.id);
+    }).length;
+  }, [allPlaces, actor, myReviewedPlaceIds, visitedCount]);
+
   const hiddenWishlistCount = useMemo(
     () =>
       allPlaces.filter(
@@ -600,22 +614,23 @@ export default function App() {
       const isHidden = isWish && hiddenWishlistSet.has(p.id);
 
       switch (statusFilter) {
-        case 'all':
-          return !isHidden;
-        case 'visited':
-          return !isWish;
-        case 'mine':
-          if (isWish || !actor) return false;
-          return p.ownerId === actor.uid || myReviewedPlaceIds.has(p.id);
+        case 'visited': {
+          if (isWish) return false;
+          if (!actor || visitedOwnerFilter === 'all') return true;
+          if (visitedOwnerFilter === 'mine') {
+            return p.ownerId === actor.uid || myReviewedPlaceIds.has(p.id);
+          }
+          return p.ownerId !== actor.uid && !myReviewedPlaceIds.has(p.id);
+        }
         case 'wishlist':
           return isWish && !isHidden;
         case 'hidden':
           return isHidden;
         default:
-          return !isHidden;
+          return !isWish;
       }
     });
-  }, [allPlaces, statusFilter, hiddenWishlistSet, actor, myReviewedPlaceIds]);
+  }, [allPlaces, statusFilter, visitedOwnerFilter, hiddenWishlistSet, actor, myReviewedPlaceIds]);
 
   const knownRegions = useMemo(() => {
     const map = new Map<string, string>();
@@ -1086,22 +1101,19 @@ export default function App() {
           </div>
         )}
 
-        {/* Tümü / Lezzet Noktaları / Gittiklerim / Gidilecekler / Gizlediklerim Sekmeleri */}
-        <div className="space-y-3">
+        {/* Ana Sekmeler: Lezzet Noktaları / Gitmek İstiyorum | Gizlediklerim */}
+        <div className="space-y-2.5">
           <div className="flex flex-wrap items-center justify-between gap-3">
             {actor ? (
               <div
                 role="tablist"
                 aria-label="Mekan listesi görünümü"
-                className="inline-flex flex-wrap items-center gap-1 p-1 bg-slate-200/70 rounded-xl self-start max-w-full"
+                className="inline-flex flex-wrap items-center gap-1.5 p-1.5 bg-slate-100 border border-slate-200/80 rounded-2xl self-start max-w-full"
               >
                 {(
                   [
-                    ['all', 'Tümü', visitedCount + wishlistCount],
                     ['visited', 'Lezzet Noktaları', visitedCount],
-                    ['mine', 'Gittiklerim', mineVisitedCount],
                     ['wishlist', 'Gitmek İstiyorum', wishlistCount],
-                    ['hidden', 'Gizlediklerim', hiddenWishlistCount],
                   ] as const
                 ).map(([key, label, count]) => {
                   const active = statusFilter === key;
@@ -1112,16 +1124,57 @@ export default function App() {
                       role="tab"
                       aria-selected={active}
                       onClick={() => setStatusFilter(key)}
-                      className={`min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 tabular-nums ${
+                      className={`min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap shrink-0 tabular-nums ${
                         active
-                          ? 'bg-white text-slate-900 shadow-xs'
-                          : 'text-slate-600 hover:text-slate-900'
+                          ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/90'
+                          : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
                       }`}
                     >
-                      {label} ({count})
+                      <span>{label}</span>
+                      <span
+                        className={`inline-flex items-center justify-center min-w-[20px] px-1.5 py-0.5 rounded-md text-[11px] font-semibold tabular-nums ${
+                          active
+                            ? 'bg-emerald-50 text-emerald-800'
+                            : 'bg-slate-200/80 text-slate-700'
+                        }`}
+                      >
+                        {count}
+                      </span>
                     </button>
                   );
                 })}
+
+                <span
+                  className="hidden sm:block h-5 w-px bg-slate-300/80 mx-0.5"
+                  aria-hidden="true"
+                />
+
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={statusFilter === 'hidden'}
+                  onClick={() => setStatusFilter('hidden')}
+                  title="Gitmek İstiyorum listenizden gizlediğiniz kayıtlar"
+                  className={`min-h-[38px] inline-flex items-center justify-center gap-1.5 px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-all whitespace-nowrap shrink-0 tabular-nums ${
+                    statusFilter === 'hidden'
+                      ? 'bg-white text-slate-900 shadow-xs ring-1 ring-slate-200/90'
+                      : 'text-slate-600 hover:text-slate-900 hover:bg-white/60'
+                  }`}
+                >
+                  <EyeOff className="w-3.5 h-3.5 text-slate-500 shrink-0" />
+                  <span>Gizlediklerim</span>
+                  <span
+                    className={`inline-flex items-center justify-center min-w-[20px] px-1.5 py-0.5 rounded-md text-[11px] font-semibold tabular-nums ${
+                      statusFilter === 'hidden'
+                        ? 'bg-amber-100 text-amber-900'
+                        : hiddenWishlistCount > 0
+                          ? 'bg-amber-100/80 text-amber-900'
+                          : 'bg-slate-200/80 text-slate-700'
+                    }`}
+                  >
+                    {hiddenWishlistCount}
+                  </span>
+                </button>
               </div>
             ) : (
               <div className="inline-flex flex-wrap items-center gap-2">
@@ -1139,9 +1192,53 @@ export default function App() {
               <span className="font-mono font-semibold text-slate-900">
                 {sortedAndFilteredPlaces.length}
               </span>{' '}
-              mekan · {actor ? 'Ortak liste · Bulut senkronize' : 'Ortak liste · Giriş yapmadan görüntüleniyor'}
+              mekan
+              {actor && hiddenWishlistCount > 0 && statusFilter === 'wishlist'
+                ? ` (${hiddenWishlistCount} gizli hariç)`
+                : ''}{' '}
+              · {actor ? 'Ortak liste · Bulut senkronize' : 'Ortak liste · Giriş yapmadan görüntüleniyor'}
             </p>
           </div>
+
+          {actor && statusFilter === 'visited' && (
+            <div
+              role="group"
+              aria-label="Lezzet noktaları alt filtresi"
+              className="inline-flex flex-wrap items-center gap-1.5"
+            >
+              {(
+                [
+                  ['all', 'Hepsi', visitedCount],
+                  ['mine', 'Gittiklerim', mineVisitedCount],
+                  ['others', 'Keşfet', othersVisitedCount],
+                ] as const
+              ).map(([key, label, count]) => {
+                const active = visitedOwnerFilter === key;
+                return (
+                  <button
+                    key={key}
+                    type="button"
+                    aria-pressed={active}
+                    onClick={() => setVisitedOwnerFilter(key)}
+                    className={`min-h-[32px] inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors whitespace-nowrap tabular-nums ${
+                      active
+                        ? 'bg-emerald-50 border-emerald-200 text-emerald-900 font-semibold'
+                        : 'bg-white border-slate-200 text-slate-600 hover:text-slate-900 hover:bg-slate-50'
+                    }`}
+                  >
+                    <span>{label}</span>
+                    <span
+                      className={`text-[11px] font-semibold tabular-nums ${
+                        active ? 'text-emerald-700' : 'text-slate-400'
+                      }`}
+                    >
+                      {count}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+          )}
 
           {/* Çoklu Kelime Akıllı Arama + Ürün & Bölge Seçimi + Konumum & Bölgenin En İyileri */}
           <div className="grid grid-cols-2 lg:grid-cols-12 gap-2.5">
@@ -1390,48 +1487,64 @@ export default function App() {
             <h1 className="text-lg sm:text-xl font-semibold text-slate-900">
               {allPlaces.length === 0
                 ? 'Gittiğiniz ve Gideceğiniz Mekanları Ekleyin'
-                : statusFilter === 'mine' &&
+                : statusFilter === 'visited' &&
+                    visitedOwnerFilter === 'mine' &&
                     mineVisitedCount === 0 &&
                     !searchText &&
                     productFilter === 'all' &&
                     regionFilter === 'all'
                   ? 'Henüz Değerlendirdiğiniz Bir Mekan Yok'
-                  : statusFilter === 'hidden' &&
-                      hiddenWishlistCount === 0 &&
+                  : statusFilter === 'visited' &&
+                      visitedOwnerFilter === 'others' &&
+                      othersVisitedCount === 0 &&
                       !searchText &&
                       productFilter === 'all' &&
                       regionFilter === 'all'
-                    ? 'Gizlediğiniz Kayıt Bulunmuyor'
-                    : statusFilter === 'wishlist' &&
-                        hiddenWishlistCount > 0 &&
+                    ? 'Keşfedilecek Yeni Bir Mekan Yok'
+                    : statusFilter === 'hidden' &&
+                        hiddenWishlistCount === 0 &&
                         !searchText &&
                         productFilter === 'all' &&
                         regionFilter === 'all'
-                      ? `Gizlediğiniz ${hiddenWishlistCount} Gitmek İstiyorum Mekanı Var`
-                      : 'Seçili Filtreye Uygun Mekan Yok'}
+                      ? 'Gizlediğiniz Kayıt Bulunmuyor'
+                      : statusFilter === 'wishlist' &&
+                          hiddenWishlistCount > 0 &&
+                          !searchText &&
+                          productFilter === 'all' &&
+                          regionFilter === 'all'
+                        ? `Gizlediğiniz ${hiddenWishlistCount} Gitmek İstiyorum Mekanı Var`
+                        : 'Seçili Filtreye Uygun Mekan Yok'}
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {allPlaces.length === 0
                 ? 'İster gittiğiniz restoran ve lokantaları puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gitmek İstiyorum listenize ekleyin.'
-                : statusFilter === 'mine' &&
+                : statusFilter === 'visited' &&
+                    visitedOwnerFilter === 'mine' &&
                     mineVisitedCount === 0 &&
                     !searchText &&
                     productFilter === 'all' &&
                     regionFilter === 'all'
                   ? 'Yeni bir lezzet noktası ekleyebilir veya topluluktaki mevcut mekanlara yorum ve puan bırakarak kendi listenizi oluşturabilirsiniz.'
-                  : statusFilter === 'hidden' &&
-                      hiddenWishlistCount === 0 &&
+                  : statusFilter === 'visited' &&
+                      visitedOwnerFilter === 'others' &&
+                      othersVisitedCount === 0 &&
                       !searchText &&
                       productFilter === 'all' &&
                       regionFilter === 'all'
-                    ? 'Gitmek İstiyorum listenizden gizlediğiniz mekanlar burada listelenir.'
-                    : statusFilter === 'wishlist' &&
-                        hiddenWishlistCount > 0 &&
+                    ? 'Topluluktaki mevcut lezzet noktalarının tamamını değerlendirmişsiniz veya henüz başka bir kullanıcının eklediği mekan yok.'
+                    : statusFilter === 'hidden' &&
+                        hiddenWishlistCount === 0 &&
                         !searchText &&
                         productFilter === 'all' &&
                         regionFilter === 'all'
-                      ? 'Gitmek İstiyorum listenizdeki kayıtlarınız şu anda Gizlediklerim sekmesinde tutuluyor.'
-                      : 'Farklı bir ürün çeşidi, bölge veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
+                      ? 'Gitmek İstiyorum listenizden gizlediğiniz mekanlar burada listelenir.'
+                      : statusFilter === 'wishlist' &&
+                          hiddenWishlistCount > 0 &&
+                          !searchText &&
+                          productFilter === 'all' &&
+                          regionFilter === 'all'
+                        ? 'Gitmek İstiyorum listenizdeki kayıtlarınız şu anda Gizlediklerim sekmesinde tutuluyor.'
+                        : 'Farklı bir ürün çeşidi, bölge veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
             </p>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
               {actor && hiddenWishlistCount > 0 && statusFilter === 'wishlist' && (
@@ -1464,7 +1577,8 @@ export default function App() {
               {(productFilter !== 'all' ||
                 regionFilter !== 'all' ||
                 searchText ||
-                statusFilter !== 'all' ||
+                statusFilter !== 'visited' ||
+                visitedOwnerFilter !== 'all' ||
                 bestInAreaActive) && (
                 <button
                   type="button"
@@ -1472,7 +1586,8 @@ export default function App() {
                     setProductFilter('all');
                     setRegionFilter('all');
                     setSearchText('');
-                    setStatusFilter('all');
+                    setStatusFilter('visited');
+                    setVisitedOwnerFilter('all');
                     setBestInAreaActive(false);
                   }}
                   className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs sm:text-sm font-semibold hover:bg-slate-50 transition-colors"
@@ -2052,13 +2167,15 @@ export default function App() {
               setStatusFilter('hidden');
               return;
             }
-            if (
-              actor &&
-              statusFilter !== 'all' &&
-              !(statusFilter === 'mine' && createdStatus === 'visited') &&
-              statusFilter !== createdStatus
-            ) {
-              setStatusFilter(createdStatus);
+            if (actor) {
+              if (createdStatus === 'visited') {
+                setStatusFilter('visited');
+                if (visitedOwnerFilter === 'others') {
+                  setVisitedOwnerFilter('mine');
+                }
+              } else {
+                setStatusFilter('wishlist');
+              }
             }
           }}
         />
