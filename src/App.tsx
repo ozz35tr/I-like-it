@@ -249,7 +249,7 @@ export default function App() {
       },
       (err) => {
         setNotice(
-          formatFriendlyFirestoreError(err, 'Gizlenen gidilecekler tercihiniz yüklenemedi.')
+          formatFriendlyFirestoreError(err, 'Gizlenen Gitmek İstiyorum tercihiniz yüklenemedi.')
         );
       }
     );
@@ -332,8 +332,8 @@ export default function App() {
       setHiddenWishlistIds(Array.from(merged));
       setNotice(
         hide
-          ? 'Kayıt yalnızca sizin gidilecekler listenizde gizlendi.'
-          : 'Kayıt tekrar gidilecekler listenizde gösteriliyor.'
+          ? 'Kayıt yalnızca sizin Gitmek İstiyorum listenizde gizlendi.'
+          : 'Kayıt tekrar Gitmek İstiyorum listenizde gösteriliyor.'
       );
       window.setTimeout(() => setNotice(null), 2600);
     } catch (err) {
@@ -1100,7 +1100,7 @@ export default function App() {
                     ['all', 'Tümü', visitedCount + wishlistCount],
                     ['visited', 'Lezzet Noktaları', visitedCount],
                     ['mine', 'Gittiklerim', mineVisitedCount],
-                    ['wishlist', 'Gidilecekler', wishlistCount],
+                    ['wishlist', 'Gitmek İstiyorum', wishlistCount],
                     ['hidden', 'Gizlediklerim', hiddenWishlistCount],
                   ] as const
                 ).map(([key, label, count]) => {
@@ -1129,7 +1129,7 @@ export default function App() {
                   Lezzet Noktaları ({visitedCount})
                 </span>
                 <span className="text-xs text-slate-500">
-                  Kendi değerlendirmeleriniz ve gidilecekler listeniz için giriş yapabilirsiniz
+                  Kendi değerlendirmeleriniz ve Gitmek İstiyorum listeniz için giriş yapabilirsiniz
                 </span>
               </div>
             )}
@@ -1407,12 +1407,12 @@ export default function App() {
                         !searchText &&
                         productFilter === 'all' &&
                         regionFilter === 'all'
-                      ? `Gizlediğiniz ${hiddenWishlistCount} Gidilecek Mekan Var`
+                      ? `Gizlediğiniz ${hiddenWishlistCount} Gitmek İstiyorum Mekanı Var`
                       : 'Seçili Filtreye Uygun Mekan Yok'}
             </h1>
             <p className="text-sm text-slate-600 leading-relaxed">
               {allPlaces.length === 0
-                ? 'İster gittiğiniz restoran ve lokantaları puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gidilecekler listenize ekleyin.'
+                ? 'İster gittiğiniz restoran ve lokantaları puanlayın, ister Google Haritalar’dan seçtiğiniz mekanları Gitmek İstiyorum listenize ekleyin.'
                 : statusFilter === 'mine' &&
                     mineVisitedCount === 0 &&
                     !searchText &&
@@ -1424,13 +1424,13 @@ export default function App() {
                       !searchText &&
                       productFilter === 'all' &&
                       regionFilter === 'all'
-                    ? 'Gidilecekler listenizden gizlediğiniz mekanlar burada listelenir.'
+                    ? 'Gitmek İstiyorum listenizden gizlediğiniz mekanlar burada listelenir.'
                     : statusFilter === 'wishlist' &&
                         hiddenWishlistCount > 0 &&
                         !searchText &&
                         productFilter === 'all' &&
                         regionFilter === 'all'
-                      ? 'Gidilecekler listenizdeki kayıtlarınız şu anda Gizlediklerim sekmesinde tutuluyor.'
+                      ? 'Gitmek İstiyorum listenizdeki kayıtlarınız şu anda Gizlediklerim sekmesinde tutuluyor.'
                       : 'Farklı bir ürün çeşidi, bölge veya liste sekmesi seçebilir ya da yeni bir mekan ekleyebilirsiniz.'}
             </p>
             <div className="pt-1 flex flex-wrap items-center justify-center gap-2.5">
@@ -1450,7 +1450,7 @@ export default function App() {
                   onClick={() => setStatusFilter('wishlist')}
                   className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl border border-slate-200 bg-white text-slate-700 text-xs sm:text-sm font-semibold hover:bg-slate-50 transition-colors"
                 >
-                  <span>Gidilecekler&apos;e Dön</span>
+                  <span>Gitmek İstiyorum&apos;a Dön</span>
                 </button>
               )}
               <button
@@ -1459,7 +1459,7 @@ export default function App() {
                 className="min-h-[44px] inline-flex items-center gap-2 px-4 py-2 rounded-xl bg-emerald-700 text-white text-xs sm:text-sm font-semibold hover:bg-emerald-800 transition-colors"
               >
                 <Plus className="w-4 h-4" />
-                <span>{statusFilter === 'wishlist' ? 'Gidilecek Yer Ekle' : 'Yeni Mekan Ekle'}</span>
+                <span>{statusFilter === 'wishlist' ? 'Gitmek İstediğim Yer Ekle' : 'Yeni Mekan Ekle'}</span>
               </button>
               {(productFilter !== 'all' ||
                 regionFilter !== 'all' ||
@@ -1650,7 +1650,7 @@ export default function App() {
                           <td className="py-3.5 px-4">
                             {isWishlist ? (
                               <span className="text-xs font-semibold text-amber-700">
-                                {isHidden ? 'Gidilecek (Gizli)' : 'Gidilecek'}
+                                {isHidden ? 'Gitmek İstiyorum (Gizli)' : 'Gitmek İstiyorum'}
                               </span>
                             ) : (
                               <>
@@ -1687,27 +1687,28 @@ export default function App() {
                                   {formatDistanceLabel(distanceKm)}
                                 </p>
                               )}
-                              {hasLink ? (
-                                <a
-                                  href={place.mapsUrl}
-                                  target="_blank"
-                                  rel="noopener noreferrer"
-                                  className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800 hover:underline py-0.5"
-                                >
-                                  <span>Haritada Aç</span>
-                                  <ExternalLink className="w-3.5 h-3.5 shrink-0" />
-                                </a>
-                              ) : (
-                                <button
-                                  type="button"
-                                  onClick={() => setDetailPlace(place)}
-                                  className="text-xs text-slate-400 hover:text-emerald-700 py-0.5 block"
-                                >
-                                  {place.locationArea ? 'Link ekle' : 'Bölge / link ekle'}
-                                </button>
-                              )}
-                              {hasPromoLink && place.promoUrl && (
-                                <div className="pt-0.5">
+                              <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                                {hasLink ? (
+                                  <a
+                                    href={place.mapsUrl}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    title="Lokasyonu Haritada Aç"
+                                    aria-label={`${place.name} - Lokasyonu haritada aç`}
+                                    className="inline-flex items-center justify-center w-7 h-7 rounded-lg border border-emerald-200 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-100 hover:border-emerald-300 shadow-xs transition-all hover:scale-105"
+                                  >
+                                    <MapPin className="w-4 h-4" />
+                                  </a>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setDetailPlace(place)}
+                                    className="text-xs text-slate-400 hover:text-emerald-700 py-0.5"
+                                  >
+                                    {place.locationArea ? 'Link ekle' : 'Bölge / link ekle'}
+                                  </button>
+                                )}
+                                {hasPromoLink && place.promoUrl && (
                                   <a
                                     href={place.promoUrl}
                                     target="_blank"
@@ -1722,8 +1723,8 @@ export default function App() {
                                   >
                                     <PromoPlatformIcon url={place.promoUrl} className="w-4 h-4" />
                                   </a>
-                                </div>
-                              )}
+                                )}
+                              </div>
                             </div>
                           </td>
 
@@ -1760,8 +1761,8 @@ export default function App() {
                                   onClick={() => void handleToggleHiddenWishlist(place.id, !isHidden)}
                                   title={
                                     isHidden
-                                      ? 'Gidilecekler listemde tekrar göster'
-                                      : 'Gidilecekler listemde gizle'
+                                      ? 'Gitmek İstiyorum listemde tekrar göster'
+                                      : 'Gitmek İstiyorum listemde gizle'
                                   }
                                   aria-label={
                                     isHidden ? `${place.name} kaydını göster` : `${place.name} kaydını gizle`
@@ -1911,7 +1912,7 @@ export default function App() {
                         <div className="shrink-0 pt-0.5 flex flex-col items-end gap-1">
                           {isWishlist ? (
                             <span className="text-xs font-semibold text-amber-700">
-                              {isHidden ? 'Gizli' : 'Gidilecek'}
+                              {isHidden ? 'Gizli' : 'Gitmek İstiyorum'}
                             </span>
                           ) : (
                             <>
@@ -1945,10 +1946,11 @@ export default function App() {
                               href={place.mapsUrl}
                               target="_blank"
                               rel="noopener noreferrer"
-                              className="min-h-[36px] inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 hover:text-emerald-800"
+                              title="Lokasyonu Aç"
+                              aria-label={`${place.name} - Lokasyonu aç`}
+                              className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-xl border border-emerald-200 bg-emerald-50/70 text-emerald-700 hover:bg-emerald-100 shadow-xs transition-transform active:scale-95"
                             >
-                              <span>Lokasyonu Aç</span>
-                              <ExternalLink className="w-3.5 h-3.5" />
+                              <MapPin className="w-[18px] h-[18px]" />
                             </a>
                           ) : (
                             <button

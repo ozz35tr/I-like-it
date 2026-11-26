@@ -481,8 +481,8 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                     <Bookmark className="w-4 h-4 text-amber-600 shrink-0" />
                     <span>
                       {isHiddenInWishlist
-                        ? 'Gidilecekler Listesinde · Sizin için gizli'
-                        : 'Gidilecekler Listesinde · Henüz puanlanmadı'}
+                        ? 'Gitmek İstiyorum Listesinde · Sizin için gizli'
+                        : 'Gitmek İstiyorum Listesinde · Henüz puanlanmadı'}
                     </span>
                   </div>
                   {onToggleHiddenWishlist && (
@@ -544,8 +544,9 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
                     rel="noopener noreferrer"
                     className="min-h-[42px] inline-flex items-center gap-1.5 px-3.5 py-2 rounded-xl bg-emerald-700 text-white text-xs font-semibold hover:bg-emerald-800 transition-colors"
                   >
+                    <MapPin className="w-4 h-4 shrink-0" />
                     <span>Haritada Aç</span>
-                    <ExternalLink className="w-3.5 h-3.5" />
+                    <ExternalLink className="w-3.5 h-3.5 shrink-0" />
                   </a>
                 ) : (
                   <a

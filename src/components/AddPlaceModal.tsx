@@ -342,7 +342,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
           {!actor && (
             <div className="rounded-xl bg-amber-50 border border-amber-200 px-3.5 py-2.5 flex flex-wrap items-center justify-between gap-2 text-xs text-amber-950">
               <span>
-                Giriş yapmadığınız için bu kayıt yalnızca bu cihazda tutulur. Kişisel gidilecekler listeniz ve ortak liste için giriş yapabilirsiniz.
+                Giriş yapmadığınız için bu kayıt yalnızca bu cihazda tutulur. Kişisel Gitmek İstiyorum listeniz ve ortak liste için giriş yapabilirsiniz.
               </span>
               {onRequestSignIn && (
                 <button
@@ -387,7 +387,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                 }`}
               >
                 <BookmarkPlus className="w-3.5 h-3.5 text-amber-600 shrink-0" />
-                <span>Gidilecek Yer</span>
+                <span>Gitmek İstiyorum</span>
               </button>
             </div>
           )}
@@ -735,7 +735,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
               />
               <EyeOff className="w-4 h-4 text-slate-500 shrink-0" />
               <span className="text-xs font-medium text-slate-700">
-                Gidilecekler listemde şimdilik gizli tut (istediğiniz zaman gösterebilirsiniz)
+                Gitmek İstiyorum listemde şimdilik gizli tut (istediğiniz zaman gösterebilirsiniz)
               </span>
             </label>
           )}
@@ -850,7 +850,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                 {submitting
                   ? 'Kaydediliyor...'
                   : effectiveVisitStatus === 'wishlist'
-                    ? 'Gidilecekler Listesine Ekle'
+                    ? 'Gitmek İstiyorum Listesine Ekle'
                     : 'Listeye Ekle'}
               </span>
             </button>
