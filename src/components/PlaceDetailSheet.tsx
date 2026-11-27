@@ -17,6 +17,7 @@ import {
   MessageSquarePlus,
   Pencil,
   Plus,
+  Share2,
   Star,
   Trash2,
   Users,
@@ -31,6 +32,7 @@ import {
   getPromoPlatformLabel,
   resolveGoogleMapsLink,
 } from '../lib/mapsLink';
+import { sharePlaceDetails } from '../lib/sharePlace';
 import {
   addReview,
   deleteReview,
@@ -102,6 +104,8 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   const [error, setError] = useState<string | null>(null);
   const [lightboxImage, setLightboxImage] = useState<string | null>(null);
   const [copiedLink, setCopiedLink] = useState(false);
+  const [shareFeedback, setShareFeedback] = useState<'shared' | 'copied' | null>(null);
+  const [sharing, setSharing] = useState(false);
 
   // Per-user own review editing state
   const [editingReviewId, setEditingReviewId] = useState<string | null>(null);
@@ -427,6 +431,22 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
     }
   };
 
+  const handleSharePlace = async () => {
+    if (sharing) return;
+    setSharing(true);
+    try {
+      const result = await sharePlaceDetails(place);
+      if (result === 'shared' || result === 'copied') {
+        setShareFeedback(result);
+        window.setTimeout(() => setShareFeedback(null), 2200);
+      } else if (result === 'unsupported') {
+        setError('Bu tarayıcıda paylaşım veya pano kopyalama desteklenmiyor.');
+      }
+    } finally {
+      setSharing(false);
+    }
+  };
+
   return (
     <>
       <div
@@ -441,7 +461,7 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
           </div>
 
           <div className="px-5 py-3 border-b border-slate-200 flex items-center justify-between gap-3 shrink-0">
-            <div className="min-w-0">
+            <div className="min-w-0 flex-1">
               <p className="text-xs text-slate-500 truncate">
                 {CATEGORY_LABELS[place.category]}
                 {place.locationArea ? ` · ${place.locationArea}` : ''}
@@ -453,14 +473,43 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
               </h2>
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              aria-label="Kapat"
-              className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
-            >
-              <X className="w-5 h-5" />
-            </button>
+            <div className="flex items-center gap-1.5 shrink-0">
+              <button
+                type="button"
+                disabled={sharing}
+                onClick={() => void handleSharePlace()}
+                aria-label={`${place.name} mekânını paylaş`}
+                className={`min-h-[38px] inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl border text-xs font-semibold transition-colors disabled:opacity-50 ${
+                  shareFeedback
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                    : 'bg-white border-slate-200 text-slate-700 hover:bg-slate-50 hover:text-emerald-700 hover:border-emerald-200'
+                }`}
+              >
+                {sharing ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : shareFeedback ? (
+                  <Check className="w-4 h-4 text-emerald-700" />
+                ) : (
+                  <Share2 className="w-4 h-4" />
+                )}
+                <span>
+                  {shareFeedback === 'copied'
+                    ? 'Kopyalandı'
+                    : shareFeedback === 'shared'
+                      ? 'Paylaşıldı'
+                      : 'Paylaş'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={onClose}
+                aria-label="Kapat"
+                className="min-h-[44px] min-w-[44px] -mr-2 flex items-center justify-center rounded-xl text-slate-500 hover:bg-slate-100"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
           </div>
 
           <div className="flex-1 overflow-y-auto p-5 space-y-5">

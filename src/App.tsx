@@ -27,6 +27,7 @@ import {
   Navigation,
   Plus,
   Search,
+  Share2,
   Star,
   Trash2,
   Upload,
@@ -54,6 +55,7 @@ import {
   normalizeTurkishSearchText,
   reverseGeocodeArea,
 } from './lib/mapsLink';
+import { sharePlaceDetails } from './lib/sharePlace';
 import {
   clearFirestoreReadCaches,
   exportBackup,
@@ -337,6 +339,43 @@ export default function App() {
       null
     );
   }, [allPlaces, detailPlace]);
+
+  const deepLinkHandledRef = useRef(false);
+
+  useEffect(() => {
+    if (deepLinkHandledRef.current || loadingPlaces || allPlaces.length === 0) return;
+    const params = new URLSearchParams(window.location.search);
+    const sharedPlaceId = params.get('place');
+    if (!sharedPlaceId) {
+      deepLinkHandledRef.current = true;
+      return;
+    }
+    const matched = allPlaces.find((p) => p.id === sharedPlaceId);
+    if (matched) {
+      deepLinkHandledRef.current = true;
+      setDetailPlace(matched);
+    }
+  }, [allPlaces, loadingPlaces]);
+
+  const handleCloseDetailPlace = () => {
+    setDetailPlace(null);
+    if (typeof window !== 'undefined' && window.location.search.includes('place=')) {
+      const url = new URL(window.location.href);
+      url.searchParams.delete('place');
+      window.history.replaceState({}, '', `${url.pathname}${url.search}${url.hash}`);
+    }
+  };
+
+  const handleSharePlace = async (sourcePlace: PlaceItem) => {
+    const result = await sharePlaceDetails(sourcePlace);
+    if (result === 'copied') {
+      setNotice(`${sourcePlace.name} bilgileri panoya kopyalandı.`);
+      window.setTimeout(() => setNotice(null), 2600);
+    } else if (result === 'unsupported') {
+      setNotice('Bu tarayıcıda paylaşım desteklenmiyor.');
+      window.setTimeout(() => setNotice(null), 3000);
+    }
+  };
 
   const handleTogglePlaceWishlist = async (sourcePlace: PlaceItem) => {
     if (!actor) {
@@ -1287,7 +1326,7 @@ export default function App() {
               {(
                 [
                   ['all', 'Hepsi', totalCatalogCount],
-                  ['visited_only', 'Lezzet Noktaları', visitedCount],
+                  ['visited_only', 'Lezzet Noktalarım', visitedCount],
                   ['wishlist_only', 'Gitmek İstenenler', wishlistCatalogCount],
                   ...(actor
                     ? ([
@@ -1964,6 +2003,15 @@ export default function App() {
                                     month: '2-digit',
                                   })}
                                 </span>
+                                <button
+                                  type="button"
+                                  onClick={() => void handleSharePlace(place)}
+                                  title="Paylaş"
+                                  aria-label={`${place.name} mekânını paylaş`}
+                                  className="min-h-[30px] min-w-[30px] flex items-center justify-center rounded-lg text-slate-400 hover:text-emerald-700 hover:bg-emerald-50 transition-colors"
+                                >
+                                  <Share2 className="w-3.5 h-3.5" />
+                                </button>
                                 {canDeletePlace && (
                                   <button
                                     type="button"
@@ -2290,6 +2338,15 @@ export default function App() {
                               )}
                             </button>
                           )}
+                          <button
+                            type="button"
+                            onClick={() => void handleSharePlace(place)}
+                            aria-label={`${place.name} mekânını paylaş`}
+                            className="min-h-[36px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-xs font-medium border border-slate-200 bg-white text-slate-600 hover:text-emerald-700 hover:border-emerald-200 hover:bg-emerald-50/70 transition-colors"
+                          >
+                            <Share2 className="w-3.5 h-3.5" />
+                            <span>Paylaş</span>
+                          </button>
                           {canDeletePlace && (
                             <button
                               type="button"
@@ -2354,8 +2411,8 @@ export default function App() {
           onToggleHiddenWishlist={actor ? handleToggleHiddenWishlist : undefined}
           onToggleUserWishlist={actor ? handleTogglePlaceWishlist : undefined}
           onRequestSignIn={() => void handleSignIn()}
-          onClose={() => setDetailPlace(null)}
-          onDeleted={() => setDetailPlace(null)}
+          onClose={handleCloseDetailPlace}
+          onDeleted={handleCloseDetailPlace}
         />
       )}
 
