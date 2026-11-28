@@ -33,7 +33,7 @@ import {
   Upload,
   Users,
 } from 'lucide-react';
-import { AddPlaceModal } from './components/AddPlaceModal';
+import { AddPlaceModal, type SelectExistingPlaceOptions } from './components/AddPlaceModal';
 import { GourmandLogo } from './components/GourmandLogo';
 import { OfflineIndicator } from './components/OfflineIndicator';
 import { PlaceDetailSheet } from './components/PlaceDetailSheet';
@@ -171,6 +171,7 @@ export default function App() {
   const [sortDir, setSortDir] = useState<SortDirection>('desc');
 
   const [detailPlace, setDetailPlace] = useState<PlaceItem | null>(null);
+  const [detailDraftOptions, setDetailDraftOptions] = useState<SelectExistingPlaceOptions | null>(null);
   const [showAddModal, setShowAddModal] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
   const [togglingWishlistId, setTogglingWishlistId] = useState<string | null>(null);
@@ -359,6 +360,7 @@ export default function App() {
 
   const handleCloseDetailPlace = () => {
     setDetailPlace(null);
+    setDetailDraftOptions(null);
     if (typeof window !== 'undefined' && window.location.search.includes('place=')) {
       const url = new URL(window.location.href);
       url.searchParams.delete('place');
@@ -2377,6 +2379,20 @@ export default function App() {
               : 'visited'
           }
           knownRegions={knownRegions}
+          existingPlaces={allPlaces}
+          myWishlistPlaceIds={myWishlistPlaceIds}
+          myReviewedPlaceIds={myReviewedPlaceIds}
+          onSelectExistingPlace={(existing, options) => {
+            setShowAddModal(false);
+            setDetailDraftOptions(options || null);
+            setDetailPlace(existing);
+          }}
+          onAddExistingToWishlist={async (existing) => {
+            await handleTogglePlaceWishlist(existing);
+            if (actor) {
+              setShowAddModal(false);
+            }
+          }}
           onRequestSignIn={() => void handleSignIn()}
           onClose={() => setShowAddModal(false)}
           onCreated={(createdId, createdStatus, hideInWishlist) => {
@@ -2402,12 +2418,17 @@ export default function App() {
 
       {liveDetailPlace && (
         <PlaceDetailSheet
+          key={liveDetailPlace.id}
           actor={actor}
           place={liveDetailPlace}
           isHiddenInWishlist={
             actor ? myWishlistPlaceIds.has(liveDetailPlace.id) && hiddenWishlistSet.has(liveDetailPlace.id) : false
           }
           isInUserWishlist={actor ? myWishlistPlaceIds.has(liveDetailPlace.id) : false}
+          initialShowReviewForm={Boolean(detailDraftOptions?.openReviewForm)}
+          initialReviewRating={detailDraftOptions?.rating ?? 5}
+          initialReviewPriceRating={detailDraftOptions?.priceRating ?? 3}
+          initialReviewComment={detailDraftOptions?.comment ?? ''}
           onToggleHiddenWishlist={actor ? handleToggleHiddenWishlist : undefined}
           onToggleUserWishlist={actor ? handleTogglePlaceWishlist : undefined}
           onRequestSignIn={() => void handleSignIn()}

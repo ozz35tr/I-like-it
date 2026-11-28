@@ -1,6 +1,9 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
+  AlertTriangle,
+  ArrowRight,
   BadgeTurkishLira,
+  BookmarkCheck,
   BookmarkPlus,
   CheckCircle2,
   ClipboardPaste,
@@ -10,23 +13,27 @@ import {
   Link2,
   Loader2,
   MapPin,
+  MessageSquarePlus,
   Plus,
   Star,
   UtensilsCrossed,
   X,
 } from 'lucide-react';
+import { findPotentialDuplicatePlaces } from '../lib/duplicatePlaceCheck';
 import { formatFriendlyFirestoreError } from '../lib/firebase';
 import {
   extractPromoLinkInput,
   extractSharedMapsInput,
   resolveGoogleMapsLink,
 } from '../lib/mapsLink';
+import { resolveSocialLink } from '../lib/socialLinkResolver';
 import { createPlace, type CloudActor } from '../lib/placeRepository';
 import {
   CATEGORY_LABELS,
   PRODUCT_TYPE_PRESETS,
   STORAGE_LIMITS,
   type PlaceCategory,
+  type PlaceItem,
   type VisitStatus,
 } from '../types/place';
 import { PhotoUploader } from './PhotoUploader';
@@ -34,10 +41,22 @@ import { PriceRatingInput } from './PriceRating';
 import { PromoPlatformIcon } from './PromoPlatformIcon';
 import { StarRatingInput } from './StarRating';
 
+export interface SelectExistingPlaceOptions {
+  openReviewForm?: boolean;
+  rating?: 1 | 2 | 3 | 4 | 5;
+  priceRating?: 1 | 2 | 3 | 4 | 5;
+  comment?: string;
+}
+
 interface AddPlaceModalProps {
   actor?: CloudActor | null;
   defaultVisitStatus?: VisitStatus;
   knownRegions?: string[];
+  existingPlaces?: PlaceItem[];
+  myWishlistPlaceIds?: Set<string>;
+  myReviewedPlaceIds?: Set<string>;
+  onSelectExistingPlace?: (place: PlaceItem, options?: SelectExistingPlaceOptions) => void;
+  onAddExistingToWishlist?: (place: PlaceItem) => Promise<void> | void;
   onRequestSignIn?: () => void;
   onClose: () => void;
   onCreated: (placeId: string, visitStatus: VisitStatus, hideInWishlist?: boolean) => void;
@@ -47,6 +66,11 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
   actor,
   defaultVisitStatus = 'visited',
   knownRegions = [],
+  existingPlaces = [],
+  myWishlistPlaceIds,
+  myReviewedPlaceIds,
+  onSelectExistingPlace,
+  onAddExistingToWishlist,
   onRequestSignIn,
   onClose,
   onCreated,
@@ -67,10 +91,16 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
   const [promoInput, setPromoInput] = useState('');
   const [promoPasteHint, setPromoPasteHint] = useState<string | null>(null);
+  const [resolvingSocial, setResolvingSocial] = useState(false);
+  const [socialAutoFillInfo, setSocialAutoFillInfo] = useState<{
+    filledLabels: string[];
+    noteSnippet: string;
+  } | null>(null);
   const promoInputRef = useRef<HTMLInputElement | null>(null);
 
   const [name, setName] = useState('');
   const [category, setCategory] = useState<PlaceCategory>('restaurant');
+  const categoryTouchedRef = useRef(false);
   const [selectedCuisines, setSelectedCuisines] = useState<string[]>([]);
   const [customCuisineInput, setCustomCuisineInput] = useState('');
   const [locationArea, setLocationArea] = useState('');
@@ -87,6 +117,35 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [addingWishlistPlaceId, setAddingWishlistPlaceId] = useState<string | null>(null);
+  const duplicateAlertRef = useRef<HTMLDivElement | null>(null);
+
+  const trimmedPromoInput = promoInput.trim();
+  const parsedPromo = trimmedPromoInput
+    ? extractPromoLinkInput(trimmedPromoInput)
+    : { url: null, platform: null, kind: null };
+  const promoLinkStatus: 'idle' | 'valid' | 'invalid' = !trimmedPromoInput
+    ? 'idle'
+    : parsedPromo.url
+      ? 'valid'
+      : 'invalid';
+
+  const duplicateCandidates = useMemo(
+    () =>
+      findPotentialDuplicatePlaces(existingPlaces, {
+        name,
+        locationArea,
+        mapsUrl: cleanMapsUrl,
+        promoUrl: parsedPromo.url || '',
+        lat: coords.lat,
+        lng: coords.lng,
+      }),
+    [existingPlaces, name, locationArea, cleanMapsUrl, parsedPromo.url, coords.lat, coords.lng]
+  );
+
+  const hasStrongOrExactMatch = duplicateCandidates.some(
+    (c) => c.strength === 'exact' || c.strength === 'strong'
+  );
 
   useEffect(() => {
     const trimmed = mapsInput.trim();
@@ -167,16 +226,6 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     mapsInputRef.current?.select();
   };
 
-  const trimmedPromoInput = promoInput.trim();
-  const parsedPromo = trimmedPromoInput
-    ? extractPromoLinkInput(trimmedPromoInput)
-    : { url: null, platform: null, kind: null };
-  const promoLinkStatus: 'idle' | 'valid' | 'invalid' = !trimmedPromoInput
-    ? 'idle'
-    : parsedPromo.url
-      ? 'valid'
-      : 'invalid';
-
   const handlePastePromoFromClipboard = async () => {
     setError(null);
     setPromoPasteHint(null);
@@ -199,6 +248,102 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     promoInputRef.current?.focus();
     promoInputRef.current?.select();
   };
+
+  const latestFormRef = useRef({
+    name,
+    locationArea,
+    selectedCuisines,
+    mapsInput,
+    comment,
+    effectiveVisitStatus,
+  });
+  latestFormRef.current = {
+    name,
+    locationArea,
+    selectedCuisines,
+    mapsInput,
+    comment,
+    effectiveVisitStatus,
+  };
+
+  useEffect(() => {
+    if (!trimmedPromoInput || parsedPromo.kind !== 'instagram' || !parsedPromo.url) {
+      setResolvingSocial(false);
+      setSocialAutoFillInfo(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    const timer = window.setTimeout(async () => {
+      setResolvingSocial(true);
+      try {
+        const resolved = await resolveSocialLink(
+          trimmedPromoInput,
+          knownRegions,
+          controller.signal
+        );
+        if (!resolved || controller.signal.aborted) return;
+
+        const current = latestFormRef.current;
+        const filledLabels: string[] = [];
+
+        if (resolved.name && !current.name.trim()) {
+          setName((prev) => (prev.trim() ? prev : resolved.name.slice(0, STORAGE_LIMITS.NAME_MAX)));
+          filledLabels.push('Mekan Adı');
+        }
+        if (resolved.category && !categoryTouchedRef.current) {
+          setCategory(resolved.category);
+          filledLabels.push('Mekan Türü');
+        }
+        if (resolved.locationArea && !current.locationArea.trim()) {
+          setLocationArea((prev) =>
+            prev.trim() ? prev : resolved.locationArea.slice(0, STORAGE_LIMITS.LOCATION_AREA_MAX)
+          );
+          filledLabels.push('Bölge');
+        }
+        if (resolved.cuisineTypes.length > 0 && current.selectedCuisines.length === 0) {
+          setSelectedCuisines((prev) =>
+            prev.length > 0
+              ? prev
+              : resolved.cuisineTypes.slice(0, STORAGE_LIMITS.MAX_CUISINE_TYPES)
+          );
+          filledLabels.push('Ürün Çeşidi');
+        }
+        if (resolved.mapsUrl && !current.mapsInput.trim()) {
+          setMapsInput((prev) => (prev.trim() ? prev : resolved.mapsUrl));
+          filledLabels.push('Harita Linki');
+        }
+        if (
+          resolved.noteSnippet &&
+          current.effectiveVisitStatus === 'wishlist' &&
+          !current.comment.trim()
+        ) {
+          setComment((prev) =>
+            prev.trim() ? prev : resolved.noteSnippet.slice(0, STORAGE_LIMITS.COMMENT_MAX)
+          );
+          filledLabels.push('Not');
+        }
+
+        if (filledLabels.length > 0 || resolved.noteSnippet) {
+          setSocialAutoFillInfo({
+            filledLabels,
+            noteSnippet: resolved.noteSnippet,
+          });
+        } else {
+          setSocialAutoFillInfo(null);
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setResolvingSocial(false);
+        }
+      }
+    }, 280);
+
+    return () => {
+      controller.abort();
+      window.clearTimeout(timer);
+    };
+  }, [trimmedPromoInput, parsedPromo.kind, parsedPromo.url, knownRegions]);
 
   const toggleCuisineTag = (label: string) => {
     const clean = label.trim().slice(0, STORAGE_LIMITS.CUISINE_TYPE_MAX);
@@ -277,6 +422,13 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
     }
     if (effectiveVisitStatus === 'visited' && trimmedComment.length < STORAGE_LIMITS.COMMENT_MIN) {
       setError('Lütfen mekan hakkında kısa bir yorum yazın.');
+      return;
+    }
+    if (hasStrongOrExactMatch) {
+      setError(
+        'Bu mekân daha önce eklenmiş. Aşağıdaki veya yukarıdaki mevcut kayda puan/yorum ekleyebilir ya da Gitmek İstiyorum listenize alabilirsiniz.'
+      );
+      duplicateAlertRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' });
       return;
     }
 
@@ -392,6 +544,199 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
           )}
 
+          {/* Mekan Adı & Benzer Kayıt Kontrolü (En Üstte) */}
+          <div className="space-y-3">
+            <div>
+              <label htmlFor="place-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
+                Restoran / Mekan Adı *
+              </label>
+              <input
+                id="place-name"
+                type="text"
+                required
+                maxLength={STORAGE_LIMITS.NAME_MAX}
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="Örn: İlk Isırık Kokoreç"
+                className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
+              />
+            </div>
+
+            {duplicateCandidates.length > 0 && (
+              <div
+                ref={duplicateAlertRef}
+                role="region"
+                aria-label="Benzer mekan uyarısı"
+                className={`rounded-2xl border p-3.5 space-y-2.5 ${
+                  hasStrongOrExactMatch
+                    ? 'bg-rose-500/10 border-rose-300/80'
+                    : 'bg-amber-50/75 border-amber-200/80'
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  <AlertTriangle
+                    className={`w-4 h-4 shrink-0 mt-0.5 ${
+                      hasStrongOrExactMatch ? 'text-rose-600' : 'text-amber-500'
+                    }`}
+                  />
+                  <div className="min-w-0">
+                    <p
+                      className={`text-xs font-semibold ${
+                        hasStrongOrExactMatch ? 'text-rose-950' : 'text-amber-950'
+                      }`}
+                    >
+                      {hasStrongOrExactMatch
+                        ? 'Bu mekân daha önce eklenmiş!'
+                        : 'Benzer isimde mevcut kayıt(lar) bulundu'}
+                    </p>
+                    <p
+                      className={`text-[11px] leading-relaxed mt-0.5 ${
+                        hasStrongOrExactMatch ? 'text-rose-900/90' : 'text-amber-900/90'
+                      }`}
+                    >
+                      {hasStrongOrExactMatch
+                        ? 'Aynı mekânın tekrar eklenmesini önlemek için yeni kayıt engellendi. Mevcut kayda puan/yorum ekleyebilir veya listenize alabilirsiniz.'
+                        : 'Farklı bir şubeyse yeni kayıt olarak ekleyebilir ya da mevcut kayda puan/yorum bırakabilirsiniz.'}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-2">
+                  {duplicateCandidates.map(({ place, strength, reason }) => {
+                    const isPlaceWishlist = place.visitStatus === 'wishlist' && place.reviewCount === 0;
+                    const isAlreadyInMyWishlist = Boolean(myWishlistPlaceIds?.has(place.id));
+                    const isAlreadyReviewed = Boolean(
+                      actor &&
+                        ((place.ownerId === actor.uid && place.visitStatus === 'visited') ||
+                          myReviewedPlaceIds?.has(place.id))
+                    );
+                    const isAddingWish = addingWishlistPlaceId === place.id;
+
+                    return (
+                      <div
+                        key={place.id}
+                        className={`rounded-xl bg-white border p-2.5 space-y-2 ${
+                          hasStrongOrExactMatch ? 'border-rose-200/80' : 'border-amber-200/80'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <p className="text-xs font-semibold text-slate-900 truncate">
+                              {place.name}
+                            </p>
+                            <p className="text-[11px] text-slate-500 truncate">
+                              {CATEGORY_LABELS[place.category]}
+                              {place.locationArea ? ` · ${place.locationArea}` : ''}
+                              {' · '}Ekleyen: {place.authorName}
+                            </p>
+                            <p
+                              className={`text-[11px] font-medium mt-0.5 ${
+                                strength === 'exact'
+                                  ? 'text-amber-700'
+                                  : strength === 'strong'
+                                    ? 'text-amber-700'
+                                    : 'text-slate-600'
+                              }`}
+                            >
+                              Eşleşme: {reason}
+                            </p>
+                          </div>
+                          <div className="shrink-0 text-right">
+                            {isPlaceWishlist ? (
+                              <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-amber-100/80 text-amber-900 text-[10px] font-semibold">
+                                Gitmek İstiyorum
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 text-[11px] font-semibold tabular-nums">
+                                <Star className="w-3 h-3 fill-amber-500 text-amber-500" />
+                                {place.avgRating.toFixed(1)} ({place.reviewCount})
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          {onSelectExistingPlace && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                onSelectExistingPlace(place, {
+                                  openReviewForm:
+                                    effectiveVisitStatus === 'visited' && !isAlreadyReviewed,
+                                  rating:
+                                    effectiveVisitStatus === 'visited' ? rating : undefined,
+                                  priceRating:
+                                    effectiveVisitStatus === 'visited' ? priceRating : undefined,
+                                  comment: comment.trim() ? comment.trim() : undefined,
+                                })
+                              }
+                              className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-emerald-700 text-white text-[11px] font-semibold hover:bg-emerald-800 transition-colors"
+                            >
+                              {effectiveVisitStatus === 'visited' && !isAlreadyReviewed ? (
+                                <>
+                                  <MessageSquarePlus className="w-3.5 h-3.5" />
+                                  <span>Mevcut Mekâna Puan / Yorum Ekle</span>
+                                </>
+                              ) : (
+                                <>
+                                  <ArrowRight className="w-3.5 h-3.5" />
+                                  <span>Mevcut Kayda Git</span>
+                                </>
+                              )}
+                            </button>
+                          )}
+
+                          {onAddExistingToWishlist && !isAlreadyReviewed && (
+                            <button
+                              type="button"
+                              disabled={isAddingWish || isAlreadyInMyWishlist}
+                              onClick={async () => {
+                                setAddingWishlistPlaceId(place.id);
+                                try {
+                                  await onAddExistingToWishlist(place);
+                                } finally {
+                                  setAddingWishlistPlaceId(null);
+                                }
+                              }}
+                              className={`min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition-colors ${
+                                isAlreadyInMyWishlist
+                                  ? 'bg-amber-50 border-amber-200 text-amber-900'
+                                  : 'bg-white border-amber-300 text-amber-900 hover:bg-amber-50'
+                              }`}
+                            >
+                              {isAddingWish ? (
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              ) : isAlreadyInMyWishlist ? (
+                                <BookmarkCheck className="w-3.5 h-3.5 text-amber-700" />
+                              ) : (
+                                <BookmarkPlus className="w-3.5 h-3.5 text-amber-700" />
+                              )}
+                              <span>
+                                {isAlreadyInMyWishlist
+                                  ? 'Gitmek İstiyorum Listemde'
+                                  : 'Gitmek İstiyorum Listeme Ekle'}
+                              </span>
+                            </button>
+                          )}
+
+                          {onSelectExistingPlace && effectiveVisitStatus === 'visited' && !isAlreadyReviewed && (
+                            <button
+                              type="button"
+                              onClick={() => onSelectExistingPlace(place)}
+                              className="min-h-[34px] inline-flex items-center gap-1 px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-[11px] font-medium text-slate-600 hover:bg-slate-50"
+                            >
+                              <span>Detayı Gör</span>
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+          </div>
+
           {/* Google Maps Share Link */}
           <div className="rounded-xl bg-slate-50 border border-slate-200 p-3.5 space-y-2.5">
             <div className="flex items-center justify-between gap-2">
@@ -498,7 +843,7 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-500 leading-relaxed">
-              Instagram, YouTube, Facebook veya web sitesi gibi herhangi bir sosyal medya bağlantısını ekleyin; daha sonra tek tıkla ulaşabilirsiniz.
+              Instagram linki yapıştırdığınızda mekan adı, türü, bölgesi ve ürün çeşitleri otomatik doldurulmaya çalışılır. YouTube, Facebook veya web sitesi de ekleyebilirsiniz.
             </p>
 
             <div className="flex gap-2">
@@ -529,7 +874,10 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
                   placeholder="https://... (Instagram, YouTube, Facebook veya web linki)"
                   className="w-full min-h-[44px] pl-9 pr-8 py-2 rounded-xl border border-slate-300 bg-white text-base sm:text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-emerald-600"
                 />
-                {promoLinkStatus === 'valid' && (
+                {resolvingSocial && (
+                  <Loader2 className="w-4 h-4 text-emerald-700 animate-spin absolute right-3 top-1/2 -translate-y-1/2" />
+                )}
+                {!resolvingSocial && promoLinkStatus === 'valid' && (
                   <CheckCircle2 className="w-4 h-4 text-emerald-700 absolute right-3 top-1/2 -translate-y-1/2" />
                 )}
               </div>
@@ -549,6 +897,34 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
               </p>
             )}
 
+            {socialAutoFillInfo && !resolvingSocial && (
+              <div className="rounded-lg bg-emerald-50/80 border border-emerald-200 px-2.5 py-1.5 space-y-1">
+                {socialAutoFillInfo.filledLabels.length > 0 && (
+                  <p className="text-[11px] font-medium text-emerald-900">
+                    Instagram bağlantısından dolduruldu: {socialAutoFillInfo.filledLabels.join(', ')}
+                  </p>
+                )}
+                {socialAutoFillInfo.noteSnippet &&
+                  effectiveVisitStatus === 'visited' &&
+                  !comment.trim() && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-700">
+                      <span className="line-clamp-2 flex-1">{socialAutoFillInfo.noteSnippet}</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setComment(
+                            socialAutoFillInfo.noteSnippet.slice(0, STORAGE_LIMITS.COMMENT_MAX)
+                          )
+                        }
+                        className="shrink-0 font-semibold text-emerald-800 hover:underline"
+                      >
+                        Yoruma Ekle
+                      </button>
+                    </div>
+                  )}
+              </div>
+            )}
+
             {promoLinkStatus === 'invalid' && (
               <p className="text-[11px] font-medium text-rose-600">
                 Geçerli bir sosyal medya linki girin (Instagram, YouTube, Facebook veya web); isterseniz boş bırakabilirsiniz.
@@ -556,42 +932,27 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             )}
           </div>
 
-          {/* Mekan Adı & İşletme Türü (Esnaf Lokantası dahil) */}
-          <div className="space-y-3">
-            <div>
-              <label htmlFor="place-name" className="block text-xs font-semibold text-slate-700 mb-1.5">
-                Restoran / Mekan Adı *
-              </label>
-              <input
-                id="place-name"
-                type="text"
-                required
-                maxLength={STORAGE_LIMITS.NAME_MAX}
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="Örn: İlk Isırık Kokoreç"
-                className="w-full min-h-[44px] px-3.5 py-2 rounded-xl border border-slate-300 text-base sm:text-sm text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-600"
-              />
-            </div>
-
-            <div>
-              <span className="block text-xs font-semibold text-slate-700 mb-1.5">Mekan Türü</span>
-              <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl">
-                {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => setCategory(cat)}
-                    className={`min-h-[38px] flex-1 min-w-[92px] px-2.5 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
-                      category === cat
-                        ? 'bg-white text-slate-900 shadow-sm'
-                        : 'text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    {CATEGORY_LABELS[cat]}
-                  </button>
-                ))}
-              </div>
+          {/* İşletme Türü */}
+          <div>
+            <span className="block text-xs font-semibold text-slate-700 mb-1.5">Mekan Türü</span>
+            <div className="flex flex-wrap gap-1.5 p-1 bg-slate-100 rounded-xl">
+              {(Object.keys(CATEGORY_LABELS) as PlaceCategory[]).map((cat) => (
+                <button
+                  key={cat}
+                  type="button"
+                  onClick={() => {
+                    categoryTouchedRef.current = true;
+                    setCategory(cat);
+                  }}
+                  className={`min-h-[38px] flex-1 min-w-[92px] px-2.5 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap ${
+                    category === cat
+                      ? 'bg-white text-slate-900 shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  {CATEGORY_LABELS[cat]}
+                </button>
+              ))}
             </div>
           </div>
 
@@ -823,6 +1184,34 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
 
           {effectiveVisitStatus === 'visited' && <PhotoUploader photos={photos} onChange={setPhotos} />}
 
+          {hasStrongOrExactMatch && (
+            <div
+              role="status"
+              className="rounded-xl bg-rose-500/10 border border-rose-300/80 p-3.5 space-y-2"
+            >
+              <div className="flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold text-rose-950">
+                    Bu mekân daha önce eklenmiş.
+                  </p>
+                  <p className="text-[11px] text-rose-900/90 leading-relaxed">
+                    Aynı mekânın tekrar kaydedilmemesi için ekleme işlemi kapatıldı. Mevcut kayda puan/yorum ekleyebilir veya Gitmek İstiyorum listenize alabilirsiniz.
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() =>
+                  duplicateAlertRef.current?.scrollIntoView({ behavior: 'smooth', block: 'center' })
+                }
+                className="text-[11px] font-semibold text-rose-700 hover:underline"
+              >
+                Eşleşen mevcut kaydı incele ↑
+              </button>
+            </div>
+          )}
+
           {error && (
             <div
               role="alert"
@@ -842,16 +1231,18 @@ export const AddPlaceModal: React.FC<AddPlaceModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={submitting}
-              className="flex-1 min-h-[46px] rounded-xl bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+              disabled={submitting || hasStrongOrExactMatch}
+              className="flex-1 min-h-[46px] rounded-xl bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 active:scale-[0.99] transition-all flex items-center justify-center gap-2 disabled:opacity-45 disabled:cursor-not-allowed disabled:hover:bg-emerald-700"
             >
               {submitting && <Loader2 className="w-4 h-4 animate-spin" />}
               <span>
                 {submitting
                   ? 'Kaydediliyor...'
-                  : effectiveVisitStatus === 'wishlist'
-                    ? 'Gitmek İstiyorum Listesine Ekle'
-                    : 'Listeye Ekle'}
+                  : hasStrongOrExactMatch
+                    ? 'Bu Mekân Zaten Kayıtlı'
+                    : effectiveVisitStatus === 'wishlist'
+                      ? 'Gitmek İstiyorum Listesine Ekle'
+                      : 'Listeye Ekle'}
               </span>
             </button>
           </div>

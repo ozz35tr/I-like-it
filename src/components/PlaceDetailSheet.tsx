@@ -63,6 +63,10 @@ interface PlaceDetailSheetProps {
   place: PlaceItem;
   isHiddenInWishlist?: boolean;
   isInUserWishlist?: boolean;
+  initialShowReviewForm?: boolean;
+  initialReviewRating?: 1 | 2 | 3 | 4 | 5;
+  initialReviewPriceRating?: 1 | 2 | 3 | 4 | 5;
+  initialReviewComment?: string;
   onToggleHiddenWishlist?: (placeId: string, hide: boolean) => Promise<void> | void;
   onToggleUserWishlist?: (place: PlaceItem) => Promise<void> | void;
   onRequestSignIn?: () => void;
@@ -84,6 +88,10 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
   place,
   isHiddenInWishlist = false,
   isInUserWishlist = false,
+  initialShowReviewForm = false,
+  initialReviewRating = 5,
+  initialReviewPriceRating = 3,
+  initialReviewComment = '',
   onToggleHiddenWishlist,
   onToggleUserWishlist,
   onRequestSignIn,
@@ -92,13 +100,13 @@ export const PlaceDetailSheet: React.FC<PlaceDetailSheetProps> = ({
 }) => {
   const [reviews, setReviews] = useState<ReviewItem[]>([]);
   const [loadingReviews, setLoadingReviews] = useState(true);
-  const [showReviewForm, setShowReviewForm] = useState(false);
+  const [showReviewForm, setShowReviewForm] = useState(initialShowReviewForm);
   const [togglingUserWishlist, setTogglingUserWishlist] = useState(false);
 
-  const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5>(5);
-  const [priceRating, setPriceRating] = useState<1 | 2 | 3 | 4 | 5>(3);
+  const [rating, setRating] = useState<1 | 2 | 3 | 4 | 5>(initialReviewRating);
+  const [priceRating, setPriceRating] = useState<1 | 2 | 3 | 4 | 5>(initialReviewPriceRating);
   const [newReviewRatingTab, setNewReviewRatingTab] = useState<'venue' | 'price'>('venue');
-  const [comment, setComment] = useState('');
+  const [comment, setComment] = useState(initialReviewComment);
   const [photos, setPhotos] = useState<string[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
